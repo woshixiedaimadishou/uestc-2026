@@ -1,0 +1,7 @@
+build/
+*.bkpk
+dataguard_tasks.json
+.workbuddy/
+*.o
+*.a
+*.exe
