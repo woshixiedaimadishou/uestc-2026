@@ -84,3 +84,9 @@
 构建：make -j
 单元测试：make test（C++ gtest）；make test-py（Python unittest）
 运行 CLI：./build/dataguard-cli --version
+
+四、发布（生成可双击运行的 exe）
+make dist
+产物：dist/DataGuard/DataGuard.exe（双击启动，无控制台窗口）+ dataguard-cli.exe + 运行时依赖。
+整个 dist/DataGuard 目录可直接拷贝到其他 Windows 机器运行（无需 Python、无需编译器）。
+说明：CLI 为静态链接的独立 exe；GUI 由 PyInstaller（onedir 模式）打包，体积约 150-200MB，启动 1-2 秒。

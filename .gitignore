@@ -1,4 +1,5 @@
 build/
+dist/
 *.bkpk
 dataguard_tasks.json
 .workbuddy/

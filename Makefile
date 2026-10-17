@@ -28,7 +28,7 @@ TEST_SRCS := \
 
 TEST_BINS := $(patsubst tests/%.cpp,$(BUILD)/tests/%.exe,$(TEST_SRCS))
 
-.PHONY: all gtest test test-py lint clean
+.PHONY: all gtest test test-py lint dist clean
 
 all: $(BUILD)/dataguard-cli.exe
 
@@ -69,6 +69,15 @@ test-py:
 
 lint:
 	$(PYTHON) -m cpplint --linelength=120 --recursive include src tests 2>&1 || true
+
+# ---------- 发布打包（v0.5 之后可用：生成可双击运行的 exe） ----------
+dist: all
+	@test -f python/dataguard_gui.py || (echo "python/dataguard_gui.py 未实现（v0.5 提供），当前无法打包 GUI" && exit 1)
+	$(PYTHON) -m PyInstaller --noconfirm --clean --windowed \
+	    --name DataGuard --distpath dist --workpath $(BUILD)/pyinstaller \
+	    python/dataguard_gui.py
+	cp $(BUILD)/dataguard-cli.exe dist/DataGuard/
+	@echo "[OK] dist/DataGuard/DataGuard.exe （双击即可运行）"
 
 clean:
 	rm -rf $(BUILD)
