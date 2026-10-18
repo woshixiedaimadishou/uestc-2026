@@ -29,6 +29,11 @@ struct FileEntry {
     std::string link_target_utf8;        // 符号链接目标（UTF-8）
     uint64_t file_id = 0;                // volume serial + file index 的 FNV-1a 哈希
     uint64_t hard_link_count = 0;        // 硬链接计数（>1 表示存在硬链接）
+
+    // ---- 以下字段仅档案层使用（扫描结果中为 0） ----
+    uint32_t checksum = 0;               // 原始数据 CRC32（EntryRecord.checksum）
+    uint64_t stored_size = 0;            // 数据区实际字节数（压缩后；EntryRecord.stored_size）
+    uint64_t offset = 0;                 // 数据在 Data Region 内的偏移（EntryRecord.offset）
 };
 
 }  // namespace dataguard

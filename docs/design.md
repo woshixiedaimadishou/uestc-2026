@@ -111,13 +111,102 @@ classDiagram
 | v0.5（10-21） | PySide6 界面、定时调度与任务持久化 |
 | v1.0（10-21） | 需求/设计/测试报告定稿、全量回归、发布 |
 
-## 5. v0.1 模块说明
+## 5. v0.2 模块说明（档案格式与备份还原）
+
+### 5.1 BKPK v1 档案格式
+
+```
+┌────────────┬──────────────────────────────┬──────────────┐
+│ FixedHeader│ Entry Table（可整体加密）     │ Data Region  │
+│ 38 字节    │ N × EntryRecord（变长）      │ （可整体加密）│
+└────────────┴──────────────────────────────┴──────────────┘
+```
+
+FixedHeader（小端，iv_len=0 时共 38 字节）：
+
+| 偏移 | 大小 | 字段 | 说明 |
+|---|---|---|---|
+| 0 | 4 | magic | `0x4B504B42`（'BKPB'） |
+| 4 | 2 | version | 1 |
+| 6 | 2 | flags | bit0=压缩, bit1=加密 |
+| 8 | 1 | compressor_id | 0=none（v0.2）, 1=deflate（v0.3） |
+| 9 | 1 | cipher_id | 0=none（v0.2）, 1=stream（v0.4） |
+| 10 | 4 | entry_count | 条目数 |
+| 14 | 4 | table_offset | 34 + iv_len + 4 |
+| 18 | 4 | data_offset | table_offset + 表字节数 |
+| 22 | 4 | header_crc | CRC32(字节[0..22)) |
+| 26 | 4 | iv_len | 加密时 16，否则 0 |
+| 30+iv | 4 | password_check | 加密口令校验值 |
+| 34+iv | 4 | table_crc | CRC32(条目表) |
+
+EntryRecord 字段顺序：name_len(u32) → kind(u8) → size(u64) → stored_size(u64) →
+mtime/ctime/atime(i64×3) → attrs(u32) → owner_len(u32) → link_target_len(u32) →
+file_id(u64) → checksum(u32) → offset(u64) → name/owner/link_target（UTF-8 变长）。
+
+### 5.2 类关系
+
+```mermaid
+classDiagram
+    class BackupManager {
+        +run(cfg, reporter) bool
+        +last_archive() path
+        +last_success_count() uint64
+    }
+    class RestoreManager {
+        +run(archive, dest, password, overwrite, only_files, reporter) bool
+    }
+    class ArchiveWriter {
+        +open(path, options) bool
+        +add(entry) bool
+        +close() bool
+    }
+    class ArchiveReader {
+        +open(path, password) bool
+        +entries() vector~FileEntry~
+        +extract(entry, dest) bool
+        +extractAll(dest) bool
+        +verify(bad_files) bool
+    }
+    class FileScanner
+    class Filter
+    class FileEntry
+    BackupManager --> FileScanner
+    BackupManager --> ArchiveWriter
+    RestoreManager --> ArchiveReader
+    ArchiveWriter --> FileEntry
+    ArchiveReader --> FileEntry
+    FileScanner --> Filter
+```
+
+### 5.3 备份/还原流程
+
+```mermaid
+sequenceDiagram
+    participant CLI as dataguard-cli
+    participant BM as BackupManager
+    participant SC as FileScanner
+    participant AW as ArchiveWriter
+    participant FS as 文件系统
+    CLI->>BM: run(cfg)
+    BM->>SC: scan(source, filter)
+    SC-->>BM: entries[]
+    BM->>AW: open(archive, options)
+    loop 每个条目
+        BM->>AW: add(entry)
+        AW->>FS: 读取文件内容 + 计算 CRC32
+    end
+    BM->>AW: close()
+    AW->>FS: 写 FixedHeader + Entry Table + Data
+    BM-->>CLI: DONE 成功数/失败数/档案路径
+```
+
+### 5.4 v0.2 模块清单
 
 | 模块 | 文件 | 职责 |
 |---|---|---|
-| FileEntry | include/dataguard/file_entry.h | 统一的文件条目数据结构（路径/类型/大小/时间/属性/属主/链接信息） |
-| path_utils | src/core/path_utils.cpp | glob 匹配、UTF-8 与 path 互转、ASCII 小写化 |
-| crc32 | src/archive/crc32.cpp | CRC-32（0xEDB88320 查表法），用于档案完整性校验 |
-| Filter | src/core/filter.cpp | 六类筛选规则（路径/扩展名/文件名/时间/尺寸/属主），exclude 优先 |
-| FileScanner | src/core/scanner.cpp | 递归扫描目录树，目录先于文件输出，符号链接不跟随 |
-| win_metadata | src/win/win_metadata.cpp | Win32 读取时间/属性/属主/硬链接计数/文件 ID；还原时写回元数据 |
+| ArchiveWriter | src/archive/archive_writer.cpp | 序列化条目（路径/类型/大小/三时间/属性/属主/链接/CRC/偏移），close 时写出 header+表+数据 |
+| ArchiveReader | src/archive/archive_reader.cpp | 校验 magic/版本/header_crc/table_crc，解析条目表，按偏移取数据并校验 CRC，还原文件/目录/符号链接 |
+| BackupManager | src/app/backup_manager.cpp | 扫描 → 逐条写档案 → 输出进度；失败条目计数不中断 |
+| RestoreManager | src/app/backup_manager.cpp | 打开档案 → 按需选择条目 → 还原；支持 `--no-overwrite` 与 `--files` 子集 |
+| CLI | src/cli/main.cpp | backup/restore/list/verify 命令；宽字符命令行解析保证中文路径；stdout 行协议 |
+

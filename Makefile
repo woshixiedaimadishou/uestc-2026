@@ -4,19 +4,23 @@
 CXX       := E:/w64devkit/bin/g++.exe
 AR        := E:/w64devkit/bin/ar.exe
 PYTHON    := E:/anaconda3/python.exe
+BASH      := E:/w64devkit/bin/bash.exe
 GTEST_SRC := E:/googletest-main/googletest-main/googletest
 GTEST_INC := $(GTEST_SRC)/include
 
 BUILD   := build
 OBJ     := $(BUILD)/obj
 CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -Iinclude -DUNICODE -D_UNICODE
-LDFLAGS  := -static -ladvapi32 -luser32
+LDFLAGS  := -static -ladvapi32 -luser32 -lshell32
 
 CORE_SRCS := \
     src/core/path_utils.cpp \
     src/core/filter.cpp \
     src/core/scanner.cpp \
     src/archive/crc32.cpp \
+    src/archive/archive_writer.cpp \
+    src/archive/archive_reader.cpp \
+    src/app/backup_manager.cpp \
     src/win/win_metadata.cpp
 
 CORE_OBJS := $(patsubst src/%.cpp,$(OBJ)/%.o,$(CORE_SRCS))
@@ -24,11 +28,12 @@ CORE_OBJS := $(patsubst src/%.cpp,$(OBJ)/%.o,$(CORE_SRCS))
 TEST_SRCS := \
     tests/test_crc32.cpp \
     tests/test_filter.cpp \
-    tests/test_scanner.cpp
+    tests/test_scanner.cpp \
+    tests/test_archive.cpp
 
 TEST_BINS := $(patsubst tests/%.cpp,$(BUILD)/tests/%.exe,$(TEST_SRCS))
 
-.PHONY: all gtest test test-py lint dist clean
+.PHONY: all gtest test test-py integration lint dist clean
 
 all: $(BUILD)/dataguard-cli.exe
 
@@ -66,6 +71,9 @@ test: $(TEST_BINS)
 
 test-py:
 	$(PYTHON) -m unittest discover -s tests/py -v
+
+integration: all
+	$(BASH) tests/integration/backup_roundtrip.sh
 
 lint:
 	$(PYTHON) -m cpplint --linelength=120 --recursive include src tests 2>&1 || true
