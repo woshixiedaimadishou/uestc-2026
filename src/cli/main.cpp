@@ -78,7 +78,7 @@ void printUsage() {
         << "  dataguard-cli --version | --help\n\n"
         << "backup 选项:\n"
         << "  --name <名称>            档案名前缀（默认 backup）\n"
-        << "  --compress               启用压缩（v0.3 提供）\n"
+        << "  --compress               启用 DEFLATE 压缩\n"
         << "  --encrypt                启用加密（v0.4 提供）\n"
         << "  --password <密码>        加密口令\n"
         << "  --include-ext <.ext>     仅包含指定扩展名（可多次）\n"

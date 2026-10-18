@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "dataguard/crc32.h"
+#include "dataguard/deflate.h"
 #include "dataguard/path_utils.h"
 #include "dataguard/win_metadata.h"
 
@@ -59,17 +60,16 @@ bool ArchiveReader::open(const std::filesystem::path& path, const std::string& p
         return false;
     }
 
-    compressed_ = (flags & kFlagCompressed) != 0;
+    compressed_ = (compressor_id == kCompressorDeflate);
     encrypted_ = (flags & kFlagEncrypted) != 0;
 
-    if (compressor_id != kCompressorNone) {
-        last_error_ = "档案使用压缩（id=" + std::to_string(compressor_id) +
-                      "），当前版本（v0.2）尚不支持解压";
+    if (compressor_id != kCompressorNone && compressor_id != kCompressorDeflate) {
+        last_error_ = "不支持的压缩算法（id=" + std::to_string(compressor_id) + "）";
         return false;
     }
     if (cipher_id != kCipherNone) {
         last_error_ = "档案使用加密（id=" + std::to_string(cipher_id) +
-                      "），当前版本（v0.2）尚不支持解密";
+                      "），当前版本（v0.3）尚不支持解密";
         return false;
     }
     if (iv_len > 4096 || static_cast<size_t>(iv_len) + kBaseHeaderBytes + 8 > file_data_.size()) {
@@ -172,6 +172,13 @@ bool ArchiveReader::readEntryData(const FileEntry& entry, std::vector<uint8_t>& 
     const size_t end = begin + static_cast<size_t>(entry.stored_size);
     if (end > file_data_.size()) return false;
     out.assign(file_data_.begin() + begin, file_data_.begin() + end);
+
+    if (compressed_) {
+        DeflateCompressor deflate;
+        std::vector<uint8_t> decompressed;
+        if (!deflate.decompress(out, decompressed)) return false;
+        out.swap(decompressed);
+    }
     return true;
 }
 

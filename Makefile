@@ -20,6 +20,10 @@ CORE_SRCS := \
     src/archive/crc32.cpp \
     src/archive/archive_writer.cpp \
     src/archive/archive_reader.cpp \
+    src/algo/bitstream.cpp \
+    src/algo/huffman.cpp \
+    src/algo/lz77.cpp \
+    src/algo/deflate.cpp \
     src/app/backup_manager.cpp \
     src/win/win_metadata.cpp
 
@@ -29,7 +33,8 @@ TEST_SRCS := \
     tests/test_crc32.cpp \
     tests/test_filter.cpp \
     tests/test_scanner.cpp \
-    tests/test_archive.cpp
+    tests/test_archive.cpp \
+    tests/test_deflate.cpp
 
 TEST_BINS := $(patsubst tests/%.cpp,$(BUILD)/tests/%.exe,$(TEST_SRCS))
 

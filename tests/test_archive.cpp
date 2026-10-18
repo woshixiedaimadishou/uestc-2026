@@ -231,21 +231,53 @@ TEST_F(ArchiveTest, EmptySourceArchive) {
     EXPECT_TRUE(reader.verify());
 }
 
-// 用例 9：v0.2 尚未支持的压缩/加密选项应给出明确错误
+// 用例 9：v0.3 已支持压缩；加密仍需 v0.4
 TEST_F(ArchiveTest, UnsupportedOptionsRejected) {
     ArchiveWriter writer;
 
-    ArchiveOptions compress_options;
-    compress_options.compress = true;
-    EXPECT_FALSE(writer.open(archive_, compress_options));
-    EXPECT_NE(writer.last_error().find("v0.3"), std::string::npos);
-
-    ArchiveWriter writer2;
+    // 加密尚未实现 → 应明确拒绝并提示 v0.4
     ArchiveOptions encrypt_options;
     encrypt_options.encrypt = true;
     encrypt_options.password = "secret";
-    EXPECT_FALSE(writer2.open(archive_, encrypt_options));
-    EXPECT_NE(writer2.last_error().find("v0.4"), std::string::npos);
+    EXPECT_FALSE(writer.open(archive_, encrypt_options));
+    EXPECT_NE(writer.last_error().find("v0.4"), std::string::npos);
+}
+
+// 用例 11：压缩档案写读回环（compressor_id=1，内容正确还原）
+TEST_F(ArchiveTest, CompressedArchiveRoundTrip) {
+    FilterSpec spec;
+    Filter filter(spec);
+    FileScanner scanner(filter);
+    const auto entries = scanner.scan(source_);
+
+    ArchiveOptions options;
+    options.compress = true;
+
+    ArchiveWriter writer;
+    ASSERT_TRUE(writer.open(archive_, options)) << writer.last_error();
+    for (const auto& entry : entries) {
+        ASSERT_TRUE(writer.add(entry)) << writer.last_error();
+    }
+    ASSERT_TRUE(writer.close()) << writer.last_error();
+
+    // 档案头 compressor_id（偏移 8）= 1 表示 DEFLATE
+    std::vector<uint8_t> header;
+    {
+        std::ifstream in(archive_, std::ios::binary);
+        header.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    ASSERT_GT(header.size(), 38u);
+    EXPECT_EQ(header[8], dataguard::kCompressorDeflate);
+
+    const fs::path restored = root_ / "restored_compressed";
+    ArchiveReader reader;
+    ASSERT_TRUE(reader.open(archive_)) << reader.last_error();
+    EXPECT_TRUE(reader.compressed());
+    EXPECT_TRUE(reader.verify());
+    ASSERT_TRUE(reader.extractAll(restored));
+
+    EXPECT_EQ(readFile(restored / "a.txt"), "hello world");
+    EXPECT_EQ(readFile(restored / "sub" / "b.cpp"), "int main(){return 0;}");
 }
 
 // 用例 10：打开不存在的档案失败且给出错误信息

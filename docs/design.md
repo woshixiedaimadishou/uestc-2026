@@ -210,3 +210,52 @@ sequenceDiagram
 | RestoreManager | src/app/backup_manager.cpp | 打开档案 → 按需选择条目 → 还原；支持 `--no-overwrite` 与 `--files` 子集 |
 | CLI | src/cli/main.cpp | backup/restore/list/verify 命令；宽字符命令行解析保证中文路径；stdout 行协议 |
 
+## 6. v0.3 DEFLATE 压缩实现
+
+### 6.1 类职责
+
+| 类 | 文件 | 职责 |
+|---|---|---|
+| `BitWriter` | src/algo/bitstream.cpp | 位级写入：`writeBits` LSB-first（块头/extra bits），`writeHuffman` MSB-first（Huffman 码字） |
+| `BitReader` | src/algo/bitstream.cpp | 位级读取（与 Writer 对称），支持 LSB/MSB 两种读取与 eof |
+| `FixedHuffmanTable` | src/algo/huffman.cpp | RFC 1951 固定码表：符号↔码字查询、长度/距离码与值的映射、逐位解码 |
+| `Lz77Matcher` | src/algo/lz77.cpp | 32KB 窗口 + 3 字节哈希链（链长上限 128），输出 literal / (length, distance) token |
+| `DeflateCompressor` | src/algo/deflate.cpp | 编排：LZ77 分词 → 块头 → 固定 Huffman 编码 → 结束符；解压为反向流程 |
+
+### 6.2 编码流程
+
+```mermaid
+flowchart LR
+    A[输入字节流] --> B[Lz77Matcher.tokenize]
+    B --> C[token 序列]
+    C --> D[BitWriter.writeBits BFINAL=1]
+    D --> E[BitWriter.writeBits BTYPE=01]
+    E --> F{token 类型}
+    F -->|Literal| G[固定码表 literal 编码]
+    F -->|Match| H[长度码+extra → 距离码+extra]
+    G --> I[结束符 256]
+    H --> I
+    I --> J[finish 输出字节流]
+```
+
+### 6.3 关键实现要点
+
+- **位序**：块头与 extra bits 走 LSB-first；Huffman 码字走 MSB-first（两者混用是 DEFLATE 最易出错处）。
+- **长度码 258**：必须用专用码 285（0 extra）；若按区间遍历会错误命中码 284（227 起、5 位 extra），已特殊处理。
+- **距离码表**：码 29 覆盖 24577–32768（13 位 extra），最大 extra 值为 8191。
+- **解码**：先读 7 位判断，再按 8/9 位分支；块结束符 256 终止当前块。
+- **重叠匹配**：LZ77 回溯复制时逐字节取值（`out[start + i]`），支持 length > distance 的重叠场景。
+
+### 6.4 实测压缩效果（v0.3）
+
+| 数据集 | 原始大小 | 压缩后 | 压缩率 |
+|---|---|---|---|
+| 中文文档 + 代码（113 KB） | 113,569 B | 1,683 B | 98.5% |
+| 集成测试数据集（21 KB） | 21,693 B | 1,192 B | 94.5% |
+| 单元测试中文文本（4 KB） | ≥1 KB | — | ≥40%（断言下限） |
+
+### 6.5 测试覆盖
+
+`test_deflate.cpp` 12 个用例：空输入、单字节、高重复、全字节值、中文文本、伪随机、长度码边界、距离码边界、LZ77 最大匹配、二进制含 0x00/0xFF、>64KB 大输入、确定性输出。
+`test_archive.cpp` 新增压缩档案回环用例（compressor_id=1、verify、还原内容一致）。
+

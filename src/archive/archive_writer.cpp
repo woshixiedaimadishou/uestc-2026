@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "dataguard/crc32.h"
+#include "dataguard/deflate.h"
 #include "dataguard/path_utils.h"
 
 namespace dataguard {
@@ -21,10 +22,6 @@ ArchiveWriter::~ArchiveWriter() {
 bool ArchiveWriter::open(const std::filesystem::path& path, const ArchiveOptions& options) {
     if (opened_) {
         last_error_ = "档案写入器已打开，不能重复打开";
-        return false;
-    }
-    if (options.compress) {
-        last_error_ = "压缩功能将在 v0.3 提供（当前版本仅支持未压缩档案）";
         return false;
     }
     if (options.encrypt) {
@@ -65,6 +62,17 @@ bool ArchiveWriter::add(const FileEntry& entry) {
         // 目录 / 符号链接 / 其他类型：无数据区内容
         if (record.kind == FileKind::Directory) record.size = 0;
         record.checksum = 0;
+    }
+
+    // DEFLATE 压缩（仅对普通文件数据；checksum 始终记录原始数据 CRC）
+    if (record.kind == FileKind::File && options_.compress && !data.empty()) {
+        DeflateCompressor deflate;
+        std::vector<uint8_t> compressed;
+        if (!deflate.compress(data, compressed)) {
+            last_error_ = "压缩失败: " + record.rel_path_utf8;
+            return false;
+        }
+        data.swap(compressed);
     }
 
     record.stored_size = static_cast<uint64_t>(data.size());
@@ -109,7 +117,8 @@ bool ArchiveWriter::close() {
     const uint32_t iv_len = 0;
     const uint32_t table_offset = kTableOffsetBase + iv_len + kTableOffsetTail;
     const uint32_t data_offset = static_cast<uint32_t>(table_offset + table.size());
-    const uint16_t flags = 0;  // 未压缩、未加密
+    const uint16_t flags = options_.compress ? kFlagCompressed : static_cast<uint16_t>(0);
+    const uint8_t compressor_id = options_.compress ? kCompressorDeflate : kCompressorNone;
 
     // 3. 构造 FixedHeader
     std::vector<uint8_t> header;
@@ -117,7 +126,7 @@ bool ArchiveWriter::close() {
     appendU32(header, kMagic);
     appendU16(header, kVersion);
     appendU16(header, flags);
-    header.push_back(kCompressorNone);
+    header.push_back(compressor_id);
     header.push_back(kCipherNone);
     appendU32(header, static_cast<uint32_t>(entries_.size()));
     appendU32(header, table_offset);
