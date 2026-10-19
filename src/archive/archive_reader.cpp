@@ -1,11 +1,13 @@
 #include "dataguard/archive_reader.h"
 
+#include <array>
 #include <fstream>
 #include <iterator>
 #include <string>
 #include <system_error>
 #include <vector>
 
+#include "dataguard/cipher.h"
 #include "dataguard/crc32.h"
 #include "dataguard/deflate.h"
 #include "dataguard/path_utils.h"
@@ -67,10 +69,46 @@ bool ArchiveReader::open(const std::filesystem::path& path, const std::string& p
         last_error_ = "不支持的压缩算法（id=" + std::to_string(compressor_id) + "）";
         return false;
     }
-    if (cipher_id != kCipherNone) {
-        last_error_ = "档案使用加密（id=" + std::to_string(cipher_id) +
-                      "），当前版本（v0.3）尚不支持解密";
+    if (cipher_id != kCipherNone && cipher_id != kCipherStream) {
+        last_error_ = "不支持的加密算法（id=" + std::to_string(cipher_id) + "）";
         return false;
+    }
+    if (encrypted_ && iv_len != 16) {
+        last_error_ = "加密档案的 IV 长度非法";
+        return false;
+    }
+    if (encrypted_) {
+        // 1) 用档案头中的 IV 重算口令校验值，不匹配即"密码错误"
+        const size_t check_pos = static_cast<size_t>(kBaseHeaderBytes) + iv_len;
+        if (check_pos + 4 > file_data_.size()) {
+            last_error_ = "档案头不完整";
+            return false;
+        }
+        const std::vector<uint8_t> iv(file_data_.begin() + kBaseHeaderBytes,
+                                      file_data_.begin() + kBaseHeaderBytes + iv_len);
+        StreamCipher cipher(password);
+        cipher.set_iv(iv);
+        const std::array<uint8_t, 4> expected = cipher.password_check();
+        for (size_t i = 0; i < 4; ++i) {
+            if (file_data_[check_pos + i] != expected[i]) {
+                last_error_ = "密码错误";
+                return false;
+            }
+        }
+
+        // 2) 解密 Entry Table + Data Region（原地替换为明文）
+        if (table_offset > file_data_.size()) {
+            last_error_ = "档案偏移字段非法";
+            return false;
+        }
+        std::vector<uint8_t> body(file_data_.begin() + table_offset, file_data_.end());
+        std::vector<uint8_t> plain;
+        if (!cipher.decrypt(body, plain)) {
+            last_error_ = "档案解密失败";
+            return false;
+        }
+        file_data_.resize(table_offset);
+        file_data_.insert(file_data_.end(), plain.begin(), plain.end());
     }
     if (iv_len > 4096 || static_cast<size_t>(iv_len) + kBaseHeaderBytes + 8 > file_data_.size()) {
         last_error_ = "档案头长度字段非法";
@@ -209,6 +247,24 @@ bool ArchiveReader::extract(const FileEntry& entry, const std::filesystem::path&
         std::filesystem::create_symlink(utf8ToPath(entry.link_target_utf8), target, ec);
         if (ec) {
             last_error_ = "创建符号链接失败（可能需要权限）: " + pathToUtf8(target);
+            return false;
+        }
+        return true;
+    }
+
+    if (entry.kind == FileKind::Hardlink) {
+        const std::filesystem::path source = dest / utf8ToPath(entry.link_target_utf8);
+        if (!std::filesystem::exists(source, ec)) {
+            last_error_ = "硬链接源文件不存在: " + entry.link_target_utf8;
+            return false;
+        }
+        std::filesystem::create_directories(target.parent_path(), ec);
+        if (std::filesystem::exists(target, ec)) {
+            std::filesystem::remove(target, ec);
+        }
+        std::filesystem::create_hard_link(source, target, ec);
+        if (ec) {
+            last_error_ = "创建硬链接失败: " + entry.rel_path_utf8;
             return false;
         }
         return true;

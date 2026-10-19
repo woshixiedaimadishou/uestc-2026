@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "dataguard/archive_format.h"
@@ -51,6 +52,8 @@ private:
     std::vector<FileEntry> entries_;
     std::vector<std::vector<uint8_t>> datas_;
     uint64_t total_data_size_ = 0;
+    std::vector<uint8_t> iv_;
+    std::unordered_map<uint64_t, std::string> seen_file_ids_;  // 硬链接去重：file_id → 首个条目路径
     std::string last_error_;
 };
 

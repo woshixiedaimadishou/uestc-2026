@@ -259,3 +259,53 @@ flowchart LR
 `test_deflate.cpp` 12 个用例：空输入、单字节、高重复、全字节值、中文文本、伪随机、长度码边界、距离码边界、LZ77 最大匹配、二进制含 0x00/0xFF、>64KB 大输入、确定性输出。
 `test_archive.cpp` 新增压缩档案回环用例（compressor_id=1、verify、还原内容一致）。
 
+## 7. v0.4 加密、特殊文件与数据淘汰
+
+### 7.1 流密码加密（自研）
+
+```mermaid
+sequenceDiagram
+    participant W as ArchiveWriter
+    participant C as StreamCipher
+    participant F as 档案文件
+    W->>C: 生成随机 IV(16B)
+    W->>C: encrypt(EntryTable + DataRegion)
+    Note over C: KSA 256 轮 → 丢弃 256 字节 → PRGA XOR
+    W->>F: 明文 Header（含 IV 与 password_check）+ 密文 body
+    F->>C: 读取 IV，重算 password_check
+    alt 口令不匹配
+        C-->>F: 密码错误（拒绝继续）
+    else 口令正确
+        C->>C: decrypt(body) → 明文条目表与数据
+    end
+```
+
+- **加密范围**：Entry Table + Data Region 整体加密，FixedHeader 保持明文（含 IV 与口令校验值）。
+- **口令校验**：用同一密钥流加密固定串 `"DG-PASS-CHECK"` 取前 4 字节写入头部，读取时重算比对。
+- **位序无关**：流密码对字节流做 XOR，与压缩顺序为"先压缩后加密"。
+
+### 7.2 硬链接去重
+
+- `ArchiveWriter::add` 维护 `file_id → 首个条目路径` 映射；
+- 同一 `file_id` 的后续条目写为 `FileKind::Hardlink`（`stored_size=0`，`link_target` 指向首个条目）；
+- `ArchiveReader::extract` 对 Hardlink 条目调用 `create_hard_link` 重建，还原后 `hard_link_count == 2`。
+
+### 7.3 数据淘汰（retention）
+
+`dataguard-cli retention <目录> <任务名> --keep-count N --keep-days D`
+
+- 扫描 `<任务名>_*.bkpk`，按修改时间由新到旧排序；
+- `keep_count`：保留最近 N 份；`keep_days`：保留最近 N 天内；
+- 删除结果以行协议输出（`LOG` + `DONE`），由 Python 端定时任务在备份完成后调用。
+
+### 7.4 组合矩阵（集成测试）
+
+| 场景 | 参数 | 结果 |
+|---|---|---|
+| plain | 无 | 通过 |
+| compressed | `--compress` | 通过（21,693 B → 1,192 B） |
+| encrypted | `--encrypt --password` | 通过（明文检查无泄露） |
+| encrypted_compressed | `--compress --encrypt` | 通过 |
+
+错误密码还原被拒绝；加密档案中检索不到明文片段。
+

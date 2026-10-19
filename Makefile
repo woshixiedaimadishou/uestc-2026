@@ -24,7 +24,9 @@ CORE_SRCS := \
     src/algo/huffman.cpp \
     src/algo/lz77.cpp \
     src/algo/deflate.cpp \
+    src/algo/stream_cipher.cpp \
     src/app/backup_manager.cpp \
+    src/app/retention.cpp \
     src/win/win_metadata.cpp
 
 CORE_OBJS := $(patsubst src/%.cpp,$(OBJ)/%.o,$(CORE_SRCS))
@@ -34,7 +36,9 @@ TEST_SRCS := \
     tests/test_filter.cpp \
     tests/test_scanner.cpp \
     tests/test_archive.cpp \
-    tests/test_deflate.cpp
+    tests/test_deflate.cpp \
+    tests/test_cipher.cpp \
+    tests/test_backup_restore.cpp
 
 TEST_BINS := $(patsubst tests/%.cpp,$(BUILD)/tests/%.exe,$(TEST_SRCS))
 
@@ -43,9 +47,12 @@ TEST_BINS := $(patsubst tests/%.cpp,$(BUILD)/tests/%.exe,$(TEST_SRCS))
 all: $(BUILD)/dataguard-cli.exe
 
 # ---------- 核心库 ----------
+# -MMD -MP：生成头文件依赖，改头文件后相关 .o 会自动重编译（避免类布局不一致导致崩溃）
+DEPS := $(CORE_OBJS:.o=.d)
+
 $(OBJ)/%.o: src/%.cpp
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD)/dataguard-cli.exe: $(CORE_OBJS) $(OBJ)/cli/main.o
 	@mkdir -p $(dir $@)
@@ -94,3 +101,5 @@ dist: all
 
 clean:
 	rm -rf $(BUILD)
+
+-include $(DEPS)

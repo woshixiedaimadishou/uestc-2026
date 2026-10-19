@@ -231,16 +231,13 @@ TEST_F(ArchiveTest, EmptySourceArchive) {
     EXPECT_TRUE(reader.verify());
 }
 
-// 用例 9：v0.3 已支持压缩；加密仍需 v0.4
-TEST_F(ArchiveTest, UnsupportedOptionsRejected) {
+// 用例 9：启用加密但未提供口令 → 明确拒绝
+TEST_F(ArchiveTest, EncryptRequiresPassword) {
     ArchiveWriter writer;
-
-    // 加密尚未实现 → 应明确拒绝并提示 v0.4
     ArchiveOptions encrypt_options;
-    encrypt_options.encrypt = true;
-    encrypt_options.password = "secret";
+    encrypt_options.encrypt = true;  // 未设置 password
     EXPECT_FALSE(writer.open(archive_, encrypt_options));
-    EXPECT_NE(writer.last_error().find("v0.4"), std::string::npos);
+    EXPECT_NE(writer.last_error().find("口令"), std::string::npos);
 }
 
 // 用例 11：压缩档案写读回环（compressor_id=1，内容正确还原）

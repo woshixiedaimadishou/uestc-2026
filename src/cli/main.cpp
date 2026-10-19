@@ -12,6 +12,7 @@
 #include "dataguard/archive_reader.h"
 #include "dataguard/backup_manager.h"
 #include "dataguard/path_utils.h"
+#include "dataguard/retention.h"
 
 namespace {
 
@@ -75,11 +76,12 @@ void printUsage() {
         << "  dataguard-cli restore <档案> <目标目录> [选项]\n"
         << "  dataguard-cli list <档案> [--password P]\n"
         << "  dataguard-cli verify <档案> [--password P]\n"
+        << "  dataguard-cli retention <目标目录> <任务名> [--keep-count N] [--keep-days D]\n"
         << "  dataguard-cli --version | --help\n\n"
         << "backup 选项:\n"
         << "  --name <名称>            档案名前缀（默认 backup）\n"
         << "  --compress               启用 DEFLATE 压缩\n"
-        << "  --encrypt                启用加密（v0.4 提供）\n"
+        << "  --encrypt                启用流密码加密\n"
         << "  --password <密码>        加密口令\n"
         << "  --include-ext <.ext>     仅包含指定扩展名（可多次）\n"
         << "  --exclude-ext <.ext>     排除指定扩展名（可多次）\n"
@@ -303,6 +305,37 @@ int cmdVerify(const std::vector<std::string>& args) {
     return 1;
 }
 
+int cmdRetention(const std::vector<std::string>& args) {
+    if (args.size() < 3) {
+        std::cerr << "用法: dataguard-cli retention <目标目录> <任务名> [--keep-count N] [--keep-days D]\n";
+        return 1;
+    }
+
+    dataguard::RetentionOptions options;
+    for (size_t i = 3; i < args.size(); ++i) {
+        const std::string& opt = args[i];
+        const bool has_value = (i + 1 < args.size());
+        if (opt == "--keep-count" && has_value) {
+            options.keep_count = std::stoi(args[++i]);
+        } else if (opt == "--keep-days" && has_value) {
+            options.keep_days = std::stoi(args[++i]);
+        } else {
+            std::cerr << "未知参数: " << opt << "\n";
+            return 1;
+        }
+    }
+
+    std::vector<std::string> logs;
+    const dataguard::RetentionResult result = dataguard::applyRetention(
+        dataguard::utf8ToPath(args[1]), args[2], options, &logs);
+
+    for (const auto& line : logs) {
+        std::cout << "LOG\tINFO\t" << line << "\n";
+    }
+    std::cout << "DONE\t" << result.kept << "\t" << result.failed << "\t" << args[1] << "\n";
+    return result.failed == 0 ? 0 : 1;
+}
+
 }  // namespace
 
 int main() {
@@ -330,6 +363,7 @@ int main() {
     if (command == "restore") return cmdRestore(sub);
     if (command == "list") return cmdList(sub);
     if (command == "verify") return cmdVerify(sub);
+    if (command == "retention") return cmdRetention(sub);
 
     std::cerr << "未知命令: " << command << "\n\n";
     printUsage();
