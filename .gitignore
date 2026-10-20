@@ -8,3 +8,4 @@ dataguard_tasks.json
 *.exe
 *.spec
 dataguard_tasks_test.json
+.vscode/

@@ -91,3 +91,11 @@ make dist
 产物：dist/DataGuard/DataGuard.exe（双击启动，无控制台窗口）+ dataguard-cli.exe + 运行时依赖。
 整个 dist/DataGuard 目录可直接拷贝到其他 Windows 机器运行（无需 Python、无需编译器）。
 说明：CLI 为静态链接的独立 exe；GUI 由 PyInstaller（onedir 模式）打包，体积约 150-200MB，启动 1-2 秒。
+
+五、手动验证压缩效果（可视化）
+make demo
+- 产物：build/deflate_demo.html（浏览器直接打开）
+- 内容：LZ77 token 流（字面/匹配着色）+ 每个 token 的位数构成 + 真实位流（按段着色）+ 落盘字节 + 三项交叉校验。
+- 校验项：位流按位序重新装字节是否自洽；Python 标准库 zlib（raw deflate, wbits=-15）能否解开我们的位流；CLI 备份还原是否一致 + 压缩/未压缩档案体积对比。
+- 换样本：python tools/deflate_visualize.py --text "..."（ASCII）或 --file README.md（支持中文/二进制）。
+- 只想要中间数据：build/deflate_probe.exe --text "abcabcabcabcabc"（输出 JSON）。

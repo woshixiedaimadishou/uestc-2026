@@ -42,7 +42,7 @@ TEST_SRCS := \
 
 TEST_BINS := $(patsubst tests/%.cpp,$(BUILD)/tests/%.exe,$(TEST_SRCS))
 
-.PHONY: all gtest test test-py integration lint dist clean
+.PHONY: all gtest test test-py integration lint dist probe demo clean
 
 all: $(BUILD)/dataguard-cli.exe
 
@@ -86,6 +86,21 @@ test-py:
 
 integration: all
 	$(BASH) tests/integration/backup_roundtrip.sh
+
+# ---------- 教学探针：查看 LZ77 token 与 DEFLATE 位流 ----------
+ALGO_OBJS := $(OBJ)/algo/bitstream.o $(OBJ)/algo/huffman.o $(OBJ)/algo/lz77.o $(OBJ)/algo/deflate.o
+
+$(BUILD)/deflate_probe.exe: tools/deflate_probe.cpp $(ALGO_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $< $(ALGO_OBJS) -o $@ $(LDFLAGS)
+	@echo "[OK] $@"
+
+probe: $(BUILD)/deflate_probe.exe
+
+# 生成一页可视化报告（build/deflate_demo.html，双击可看）
+demo: probe all
+	$(PYTHON) tools/deflate_visualize.py --out $(BUILD)/deflate_demo.html
+	@echo "[OK] $(BUILD)/deflate_demo.html"
 
 lint:
 	$(PYTHON) -m cpplint --linelength=120 --recursive include src tests 2>&1 || true
