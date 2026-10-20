@@ -17,6 +17,12 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+# 各类“非 ASCII 数字”到阿拉伯数字的映射（实现见 text_utils，此处重新导出，
+# 方便界面模块统一从 ui_common 引用）。
+from text_utils import to_ascii_digits
+
+__all__ = ["CliWorker", "ProgressDialog", "to_ascii_digits"]
+
 
 class CliWorker(QThread):
     """在后台线程中执行 CLI 调用，避免阻塞界面。"""

@@ -5,6 +5,10 @@
 2. 组装命令行参数（纯函数，便于单元测试）；
 3. 以 subprocess 调用 CLI，并逐行解析 stdout 行协议
    （PROGRESS / PROGRESS_B / LOG / DONE）。
+
+注意：Windows 命令行上限为 32767 字符，CreateProcess 超限会抛
+``WinError 206 文件名或扩展名太长``。因此条目清单不走命令行参数，
+而是写入临时文件后用 ``--files-from`` 传入。
 """
 
 from __future__ import annotations
@@ -12,14 +16,19 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 # 行协议标记
 PROGRESS = "progress"
 LOG = "log"
 DONE = "done"
+
+# Windows CreateProcess 的命令行长度硬上限（含结尾 NUL 前共 32767 个字符）。
+# 预留余量给可执行文件路径与其它参数。
+CMD_LINE_LIMIT = 30000
 
 ProgressCallback = Callable[[int, int, str], None]
 LogCallback = Callable[[str, str], None]
@@ -142,16 +151,36 @@ def build_restore_args(cli_path,
                        dest,
                        password: str = "",
                        overwrite: bool = True,
-                       files: Optional[list[str]] = None) -> list[str]:
-    """组装 restore 命令参数。"""
+                       files: Optional[list[str]] = None,
+                       files_from=None) -> list[str]:
+    """组装 restore 命令参数。
+
+    ``files_from`` 优先于 ``files``：前者是清单文件路径，可容纳任意多条目，
+    不受命令行长度限制。
+    """
     args = [str(cli_path), "restore", str(archive), str(dest)]
     if password:
         args.extend(["--password", password])
     if not overwrite:
         args.append("--no-overwrite")
-    if files:
+    if files_from:
+        args.extend(["--files-from", str(files_from)])
+    elif files:
         args.extend(["--files", ",".join(files)])
     return args
+
+
+def write_selector_file(paths: Iterable[str], directory=None) -> Path:
+    """把待还原条目写入临时清单文件（UTF-8，一行一个），返回文件路径。
+
+    调用方负责在用完后删除。
+    """
+    items = [str(item).replace("\r", "").replace("\n", "") for item in paths]
+    handle, name = tempfile.mkstemp(prefix="dataguard_restore_", suffix=".txt", dir=directory)
+    os.close(handle)
+    target = Path(name)
+    target.write_text("\n".join(items) + "\n", encoding="utf-8", newline="\n")
+    return target
 
 
 def build_retention_args(cli_path,
@@ -212,6 +241,13 @@ class CliClient:
             return CliResult(False, message="未找到 dataguard-cli.exe，请设置环境变量 DATAGUARD_CLI")
 
         try:
+            command_line = subprocess.list2cmdline([str(a) for a in args])
+            if os.name == "nt" and len(command_line) > CMD_LINE_LIMIT:
+                return CliResult(
+                    False,
+                    message=(f"命令行过长（{len(command_line)} 字符，上限约 32767），"
+                             "请减少同时还原的条目数量"),
+                )
             process = self._popen(args)
         except OSError as exc:
             return CliResult(False, message=f"启动命令行程序失败: {exc}")
@@ -251,8 +287,21 @@ class CliClient:
     def restore(self, archive, dest, **kwargs) -> CliResult:
         on_progress = kwargs.pop("on_progress", None)
         on_log = kwargs.pop("on_log", None)
-        args = build_restore_args(self.cli_path, archive, dest, **kwargs)
-        return self._run(args, on_progress, on_log)
+        files = kwargs.pop("files", None)
+        files_from = kwargs.pop("files_from", None)
+
+        selector_file = None
+        try:
+            # 条目一律走清单文件，避免上千条路径拼成超长命令行（WinError 206）
+            if files and not files_from:
+                selector_file = write_selector_file(files)
+                files_from = selector_file
+            args = build_restore_args(self.cli_path, archive, dest,
+                                      files_from=files_from, **kwargs)
+            return self._run(args, on_progress, on_log)
+        finally:
+            if selector_file is not None:
+                selector_file.unlink(missing_ok=True)
 
     def retention(self, dest_dir, task_name, keep_count=0, keep_days=0) -> CliResult:
         args = build_retention_args(self.cli_path, dest_dir, task_name, keep_count, keep_days)

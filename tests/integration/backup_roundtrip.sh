@@ -110,5 +110,47 @@ if "$CLI" restore "$WORK"/encrypted/archives/*.bkpk "$WORK/bad_restore" --passwo
 fi
 echo "错误密码已被拒绝"
 
+# ---------- 局部还原：清单文件 + 目录选择 ----------
+echo ""
+echo "========== 场景: 部分还原 =========="
+ARCHIVE=$(ls "$WORK"/plain/archives/*.bkpk | head -1)
+SELECT="$WORK/select.txt"
+printf 'a.txt\nsub\n' > "$SELECT"
+"$CLI" restore "$ARCHIVE" "$WORK/partial" --files-from "$SELECT"
+[ -f "$WORK/partial/a.txt" ] || { echo "错误：选中文件未还原"; exit 1; }
+[ -f "$WORK/partial/sub/deep/c.dat" ] || { echo "错误：选中目录未还原整棵子树"; exit 1; }
+[ ! -f "$WORK/partial/text.txt" ] || { echo "错误：未选中条目被还原"; exit 1; }
+echo "  清单文件 + 目录子树还原通过"
+
+# 不存在的条目必须报错，而不是“成功 0 项”
+printf 'not-exist.txt\n' > "$WORK/none.txt"
+if "$CLI" restore "$ARCHIVE" "$WORK/none" --files-from "$WORK/none.txt" >/dev/null 2>&1; then
+    echo "错误：不存在的条目竟然还原成功"
+    exit 1
+fi
+echo "  不存在条目已正确报错"
+
+# 大批量条目：1200 个文件全部经清单文件还原（回归 WinError 206）
+echo ""
+echo "========== 场景: 大批量条目还原 =========="
+"$PYTHON" -c "
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+for i in range(1200):
+    target = root / ('bulk_%02d' % (i // 100)) / 'nested'
+    target.mkdir(parents=True, exist_ok=True)
+    (target / ('document_%04d_payload.txt' % i)).write_text('row %d\n' % i * 3, encoding='utf-8')
+" "$WORK/bulk_src"
+"$CLI" backup "$WORK/bulk_src" "$WORK/bulk_out" --name bulk --compress >/dev/null
+BULK_ARCHIVE=$(ls "$WORK"/bulk_out/*.bkpk | head -1)
+"$CLI" list "$BULK_ARCHIVE" | awk -F'\t' 'NR>1 && NF>=4 {sub(/\r$/, "", $4); print $4}' > "$WORK/bulk_list.txt"
+echo "  清单条目: $(wc -l < "$WORK/bulk_list.txt")"
+"$CLI" restore "$BULK_ARCHIVE" "$WORK/bulk_restored" --files-from "$WORK/bulk_list.txt" >/dev/null
+RESTORED_COUNT=$(find "$WORK/bulk_restored" -type f | wc -l)
+echo "  还原文件: $RESTORED_COUNT"
+[ "$RESTORED_COUNT" -eq 1200 ] || { echo "错误：大批量还原文件数不符"; exit 1; }
+"$PYTHON" "$ROOT/tools/compare_tree.py" "$WORK/bulk_src" "$WORK/bulk_restored"
+echo "  大批量条目还原通过"
+
 echo ""
 echo "INTEGRATION OK"

@@ -150,9 +150,13 @@ bool RestoreManager::run(const std::filesystem::path& archive,
         const FileEntry& entry = entries[static_cast<size_t>(i)];
 
         if (!only_files.empty()) {
+            // 选中文件 → 只还原该条目；选中目录 → 还原其整棵子树
             bool selected = false;
             for (const auto& rel : only_files) {
-                if (rel == entry.rel_path_utf8) {
+                if (rel == entry.rel_path_utf8 ||
+                    (entry.rel_path_utf8.size() > rel.size() &&
+                     entry.rel_path_utf8.compare(0, rel.size(), rel) == 0 &&
+                     entry.rel_path_utf8[rel.size()] == '/')) {
                     selected = true;
                     break;
                 }
@@ -182,6 +186,13 @@ bool RestoreManager::run(const std::filesystem::path& archive,
 
     if (failed > 0) {
         last_error_ = "部分条目还原失败: " + std::to_string(failed) + " 个";
+    }
+    if (!only_files.empty() && restored == 0 && failed == 0) {
+        last_error_ = "选中的条目在档案中不存在（共 " + std::to_string(only_files.size()) + " 项）";
+        if (reporter) reporter->on_log(LogLevel::Error, last_error_);
+        last_success_count_ = 0;
+        last_failed_count_ = 0;
+        return false;
     }
     last_success_count_ = restored;
     last_failed_count_ = failed;

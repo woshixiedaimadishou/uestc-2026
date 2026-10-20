@@ -73,6 +73,16 @@ protected:
         return manager.run(archive, dest, password, true, {}, nullptr);
     }
 
+    bool runRestoreSubset(const fs::path& archive, const fs::path& dest,
+                          const std::vector<std::string>& only) {
+        RestoreManager manager;
+        const bool ok = manager.run(archive, dest, "", true, only, nullptr);
+        last_subset_error_ = manager.last_error();
+        return ok;
+    }
+
+    std::string last_subset_error_;
+
     fs::path root_;
     fs::path source_;
 };
@@ -242,4 +252,29 @@ TEST_F(BackupRestoreTest, RetentionKeepsLatestN) {
         if (item.is_regular_file()) ++remaining;
     }
     EXPECT_EQ(remaining, 2);
+}
+
+// 用例 9：子集还原 —— 选中目录应还原整棵子树，未选中条目不得出现
+TEST_F(BackupRestoreTest, SubsetRestoreByDirectory) {
+    ArchiveOptions options;
+    fs::path archive;
+    ASSERT_TRUE(runBackup(options, archive));
+
+    const fs::path restored = root_ / "restored_subset";
+    ASSERT_TRUE(runRestoreSubset(archive, restored, {"sub"}));
+
+    EXPECT_TRUE(fs::exists(restored / "sub" / "b.bin"));
+    EXPECT_FALSE(fs::exists(restored / "a.txt"));
+    EXPECT_FALSE(fs::exists(restored / u8"\u4e2d\u6587\u6587\u4ef6.txt"));
+}
+
+// 用例 10：选中条目不存在时必须失败，而不是静默“成功 0 项”
+TEST_F(BackupRestoreTest, SubsetRestoreUnknownSelectionFails) {
+    ArchiveOptions options;
+    fs::path archive;
+    ASSERT_TRUE(runBackup(options, archive));
+
+    const fs::path restored = root_ / "restored_unknown";
+    EXPECT_FALSE(runRestoreSubset(archive, restored, {"not-exist.txt"}));
+    EXPECT_NE(last_subset_error_.find(u8"不存在"), std::string::npos);
 }

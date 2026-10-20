@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from qt_bootstrap import ensure as _ensure_qt_runtime
+from qt_bootstrap import ui_locale
 
 _ensure_qt_runtime()
 
@@ -27,6 +28,8 @@ from PySide6.QtWidgets import (
     QWizard,
     QWizardPage,
 )
+
+from ui_common import to_ascii_digits
 
 
 def split_values(text: str) -> list[str]:
@@ -165,6 +168,10 @@ class SchedulePage(QWizardPage):
         self.mode.addItems(["立即执行", "每天", "每周", "每月", "一次性"])
         self.time_edit = QTimeEdit(QTime(8, 0))
         self.time_edit.setDisplayFormat("HH:mm")
+        # 显式绑定“阿拉伯数字”区域，避免系统区域（如 zh_HK）把时间渲染成 〇〨:〇〇
+        safe_locale = ui_locale()
+        if safe_locale is not None:
+            self.time_edit.setLocale(safe_locale)
         self.weekday = QComboBox()
         self.weekday.addItems(["周一", "周二", "周三", "周四", "周五", "周六", "周日"])
         self.day_spin = QSpinBox()
@@ -172,12 +179,18 @@ class SchedulePage(QWizardPage):
         self.run_at = QDateEdit()
         self.run_at.setDisplayFormat("yyyy-MM-dd")
         self.run_at.setDate(QDate.currentDate().addDays(1))
+        if safe_locale is not None:
+            self.run_at.setLocale(safe_locale)
 
         self.retention_mode = QComboBox()
         self.retention_mode.addItems(["不淘汰", "保留最近 N 份", "保留最近 N 天"])
         self.retention_value = QSpinBox()
         self.retention_value.setRange(1, 999)
         self.retention_value.setValue(5)
+
+        if safe_locale is not None:
+            for spin in (self.day_spin, self.retention_value):
+                spin.setLocale(safe_locale)
 
         form = QFormLayout(self)
         form.addRow("执行方式", self.mode)
@@ -220,8 +233,8 @@ class SchedulePage(QWizardPage):
             "minute": time_value.minute(),
             "weekday": self.weekday.currentIndex() + 1,
             "day_of_month": self.day_spin.value(),
-            "run_at": f"{self.run_at.date().toString('yyyy-MM-dd')} "
-                      f"{time_value.toString('HH:mm')}",
+            "run_at": to_ascii_digits(f"{self.run_at.date().toString('yyyy-MM-dd')} "
+                                      f"{time_value.toString('HH:mm')}"),
         }
 
     def retention_config(self) -> dict:

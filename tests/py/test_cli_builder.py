@@ -1,16 +1,20 @@
 """命令行参数组装测试。"""
 
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 
 from cli_client import (  # noqa: E402
+    CMD_LINE_LIMIT,
     build_backup_args,
     build_list_args,
     build_restore_args,
     build_retention_args,
+    write_selector_file,
 )
 
 CLI = r"C:\app\dataguard-cli.exe"
@@ -80,6 +84,19 @@ class BuildOtherArgsTest(unittest.TestCase):
         self.assertIn("--no-overwrite", args)
         self.assertEqual(args[args.index("--files") + 1], "a.txt,sub/b.txt")
 
+    def test_restore_prefers_selector_file(self):
+        """清单文件优先于逗号列表：避免上千条目拼成超长命令行。"""
+        args = build_restore_args(CLI, "a.bkpk", "out",
+                                  files=["a.txt"], files_from="C:/tmp/list.txt")
+        self.assertIn("--files-from", args)
+        self.assertEqual(args[args.index("--files-from") + 1], "C:/tmp/list.txt")
+        self.assertNotIn("--files", args)
+
+    def test_restore_without_selection_passes_no_filter(self):
+        args = build_restore_args(CLI, "a.bkpk", "out")
+        self.assertNotIn("--files", args)
+        self.assertNotIn("--files-from", args)
+
     def test_retention_options(self):
         args = build_retention_args(CLI, "dst", "job", keep_count=3, keep_days=7)
         self.assertEqual(args[1], "retention")
@@ -95,6 +112,40 @@ class BuildOtherArgsTest(unittest.TestCase):
         args = build_list_args(CLI, "a.bkpk", password="p")
         self.assertEqual(args[1], "list")
         self.assertIn("--password", args)
+
+
+class SelectorFileTest(unittest.TestCase):
+    """回归：条目很多时命令行会超过 32767 字符（WinError 206）。"""
+
+    def test_write_selector_file_roundtrip(self):
+        paths = ["a.txt", "目录/b.txt", "c d/e.txt"]
+        target = write_selector_file(paths)
+        try:
+            text = target.read_text(encoding="utf-8")
+            self.assertEqual(text.splitlines(), paths)
+            self.assertTrue(text.endswith("\n"))
+        finally:
+            target.unlink(missing_ok=True)
+
+    def test_selector_file_keeps_command_line_short(self):
+        paths = [f"bucket_{i // 100:02d}/nested/document_{i:05d}_payload.txt" for i in range(3000)]
+        with tempfile.TemporaryDirectory() as tmp:
+            target = write_selector_file(paths, directory=tmp)
+            args = build_restore_args(CLI, "a.bkpk", "out", files_from=target)
+            old_args = build_restore_args(CLI, "a.bkpk", "out", files=paths)
+            new_len = len(subprocess.list2cmdline([str(a) for a in args]))
+            old_len = len(subprocess.list2cmdline([str(a) for a in old_args]))
+            self.assertLess(new_len, 1000)
+            self.assertGreater(old_len, CMD_LINE_LIMIT)  # 旧方式必然超限
+            self.assertEqual(len(target.read_text(encoding="utf-8").splitlines()), 3000)
+
+    def test_selector_file_strips_line_breaks(self):
+        target = write_selector_file(["a\r\nb.txt", "c.txt\n"])
+        try:
+            self.assertEqual(target.read_text(encoding="utf-8").splitlines(),
+                             ["ab.txt", "c.txt"])
+        finally:
+            target.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

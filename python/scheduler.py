@@ -11,6 +11,8 @@ _ensure_qt_runtime()
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from text_utils import to_ascii_digits
+
 
 def is_due(task: dict, now: Optional[datetime] = None,
            last_fired: Optional[datetime] = None) -> bool:
@@ -34,7 +36,7 @@ def is_due(task: dict, now: Optional[datetime] = None,
     now = now or datetime.now()
 
     if schedule_type == "once":
-        run_at = schedule.get("run_at", "")
+        run_at = to_ascii_digits(str(schedule.get("run_at", "")))
         if not run_at:
             return False
         try:

@@ -5,7 +5,10 @@
 #include <cstdint>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -17,7 +20,7 @@
 namespace {
 
 constexpr const char* kProductName = "DataGuard";
-constexpr const char* kVersion = "0.2.0";
+constexpr const char* kVersion = "0.5.1";
 
 std::string wideToUtf8(const std::wstring& w) {
     if (w.empty()) return std::string();
@@ -28,6 +31,58 @@ std::string wideToUtf8(const std::wstring& w) {
     WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()),
                         out.data(), size, nullptr, nullptr);
     return out;
+}
+
+// 规范化条目选择器：反斜杠转正斜杠、去掉 "./" 前缀与尾部斜杠
+std::string normalizeSelector(std::string value) {
+    for (char& ch : value) {
+        if (ch == '\\') ch = '/';
+    }
+    while (value.size() >= 2 && value[0] == '.' && value[1] == '/') value.erase(0, 2);
+    while (!value.empty() && value.back() == '/') value.pop_back();
+    return value;
+}
+
+// 读取“条目清单”文件：一行一个相对路径，忽略 BOM、空行、首尾空白与 # 注释。
+// 用于规避 Windows 命令行 32767 字符上限（条目很多时 --files 会拼成超长参数）。
+bool readSelectorFile(const std::filesystem::path& path,
+                      std::vector<std::string>& out,
+                      std::string& error) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        error = "无法打开条目清单文件: " + dataguard::pathToUtf8(path);
+        return false;
+    }
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+    // 跳过 UTF-8 BOM
+    if (text.size() >= 3 && static_cast<unsigned char>(text[0]) == 0xEF &&
+        static_cast<unsigned char>(text[1]) == 0xBB &&
+        static_cast<unsigned char>(text[2]) == 0xBF) {
+        text.erase(0, 3);
+    }
+
+    size_t start = 0;
+    while (start <= text.size()) {
+        const size_t newline = text.find('\n', start);
+        std::string line = text.substr(
+            start, newline == std::string::npos ? std::string::npos : newline - start);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+
+        const size_t first = line.find_first_not_of(" \t");
+        if (first != std::string::npos) {
+            const size_t last = line.find_last_not_of(" \t");
+            line = line.substr(first, last - first + 1);
+            if (!line.empty() && line[0] != '#') {
+                const std::string normalized = normalizeSelector(line);
+                if (!normalized.empty()) out.push_back(normalized);
+            }
+        }
+
+        if (newline == std::string::npos) break;
+        start = newline + 1;
+    }
+    return true;
 }
 
 // 通过宽字符命令行解析参数，保证中文路径不乱码
@@ -94,7 +149,8 @@ void printUsage() {
         << "  --follow-symlinks        跟随符号链接目录\n\n"
         << "restore 选项:\n"
         << "  --password <密码>        档案口令\n"
-        << "  --files a.txt,dir/b.txt  仅还原指定条目（逗号分隔相对路径）\n"
+        << "  --files a.txt,dir/b.txt  仅还原指定条目（逗号分隔相对路径；选中目录即还原整棵子树）\n"
+        << "  --files-from <清单文件>  从文件读取待还原条目（一行一个，UTF-8），条目多时使用\n"
         << "  --no-overwrite           不覆盖已存在的文件\n\n"
         << "说明: backup/restore 的 stdout 为行协议（PROGRESS/LOG/DONE），\n"
         << "      供图形界面与集成测试解析。\n";
@@ -228,9 +284,17 @@ int cmdRestore(const std::vector<std::string>& args) {
                 const size_t comma = list.find(',', start);
                 const std::string item = list.substr(
                     start, comma == std::string::npos ? std::string::npos : comma - start);
-                if (!item.empty()) only_files.push_back(item);
+                const std::string normalized = normalizeSelector(item);
+                if (!normalized.empty()) only_files.push_back(normalized);
                 if (comma == std::string::npos) break;
                 start = comma + 1;
+            }
+        } else if (opt == "--files-from" && has_value) {
+            // 条目多时改从文件读取，避免命令行超过 Windows 32767 字符上限
+            std::string error;
+            if (!readSelectorFile(dataguard::utf8ToPath(args[++i]), only_files, error)) {
+                std::cerr << error << "\n";
+                return 1;
             }
         } else {
             std::cerr << "未知参数: " << opt << "\n";

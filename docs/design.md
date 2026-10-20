@@ -342,7 +342,9 @@ graph LR
 | `ui_common.py` | `CliWorker(QThread)` 后台执行避免界面冻结；`ProgressDialog` 进度条与日志面板 |
 | `main_window.py` | 左侧导航（备份历史/任务管理/设置）+ 备份历史表格 + 工具栏 |
 | `backup_wizard.py` | 4 页向导：源目标 → 六类筛选 → 压缩/加密 → 计划与保留 |
-| `restore_dialog.py` | 档案选择、口令、条目树勾选、覆盖选项、还原 |
+| `restore_dialog.py` | 档案选择、口令、条目树勾选（父子联动）、覆盖选项、还原 |
+| `selection_model.py` | 勾选树纯逻辑：父子三态、全选/全不选、还原清单压缩（完全选中的子树只输出根路径） |
+| `text_utils.py` | 数字归一化（〇〡-〩/全角/阿拉伯-印度数字 → 0-9） |
 | `task_manager.py` | 任务表格 + 启用/禁用、编辑（向导预填）、删除、立即执行 |
 
 ### 8.3 发布产物
@@ -360,9 +362,67 @@ dist/DataGuard/           （92 MB，可整目录拷贝到其他 Windows 机器�
 
 本机 anaconda 自带的 PySide6 6.12 依赖系统 ICU 的较新版本，加载 QtCore 失败（`DLL load failed`）。已验证 **PySide6 6.8** 可正常使用，安装到 `E:/pyside68` 并由 `python/qt_bootstrap.py` 在导入 Qt 前插入 `sys.path`。换机器且全局 PySide6 可用时，该引导会自动跳过。
 
-### 8.5 测试
+### 8.5 数字显示与长命令行（v0.5.1 修复）
 
-- Python 单元测试 41 个：任务持久化、调度到期边界（daily/weekly/monthly/once）、行协议解析、命令行参数组装。
-- C++ 单元测试 64 个 + 集成矩阵 4 组（见 §6/§7）。
+**问题 1：数字显示为中文数字（`〇〨:〇〇`）**
+
+根因：本机系统区域为 `zh_HK`，CLDR 中该区域把 *native digits* 定义为中文数字（〇〡〢…〩）。Qt 的 `QTimeEdit` / `QDateEdit` / `QSpinBox` 按区域渲染数值，于是 `08:00` 显示成 `〇〨:〇〇`、`2026-10-20` 显示成 `〢〇〢〦-〡〇-〢〇`。
+
+修复分三层：
+
+| 层 | 做法 | 位置 |
+|---|---|---|
+| 全局 | 导入 Qt 后实测 `QLocale().toString(8)`；若结果不是 `"8"`，切换到等价区域（中文环境 → `zh_CN`，否则 `en_US`），保证所有控件默认用阿拉伯数字 | `qt_bootstrap._apply_latin_digits()` |
+| 控件 | 时间/日期/数字控件显式 `setLocale(ui_locale())`，不受后续区域变化影响 | `backup_wizard.SchedulePage` |
+| 数据 | `to_ascii_digits()` 把 〇〡-〩、全角、阿拉伯-印度、天城文数字统一归一化为 0-9，写回任务配置前调用；`scheduler.is_due` 解析 `run_at` 前也归一化，避免历史配置无法解析 | `text_utils.py` |
+
+**问题 2：`[WinError 206] 文件名或扩展名太长`**
+
+根因：部分还原时把勾选条目用逗号拼成单个 `--files` 参数。条目多时命令行长度超过 Windows CreateProcess 的 32767 字符上限（实测 2040 条目 → 102778 字符），`Popen` 直接抛 `WinError 206`。
+
+修复：条目清单改走**文件**而非命令行。
+
+```
+GUI 勾选 → write_selector_file() 写 UTF-8 临时清单（一行一个路径）
+        → dataguard-cli restore ... --files-from <清单>
+        → C++ readSelectorFile() 读入并 normalizeSelector()（反斜杠转正斜杠、去 ./ 与尾斜杠）
+        → finally 删除临时文件
+```
+
+配套修正：
+
+- `RestoreManager` 的选择器改为「精确匹配 或 目录前缀匹配」，选中目录即还原整棵子树（原先只匹配同名条目，选目录会还原出空目录）；选中条目全部不存在时返回失败并给出「选中的条目在档案中不存在」，而不是静默「成功 0 项」。
+- `CliClient._run` 增加命令行长度预检，超限时给出明确提示而不是抛 WinError。
+
+### 8.5.1 还原选择逻辑（`selection_model.py`）
+
+勾选逻辑从界面代码里抽成纯逻辑模型，便于单测：
+
+```
+SelectionTree(entries)                 # 由档案条目构建树
+├── EntryNode.state()                  # 由子节点推导 0=未选 / 1=半选 / 2=全选
+├── set_checked(node, bool)            # 勾选父节点 → 整棵子树联动
+├── set_all(bool)                      # 全选 / 全不选
+├── selected_count() / all_selected()  # 计数与「是否全选」
+└── selected_paths()                   # 生成还原清单（压缩后的路径集合）
+```
+
+**清单压缩规则**：完全选中的子树只输出其根路径（C++ 按前缀还原整棵子树），部分选中的子树向下拆到边界条目，虚拟中间目录（档案中没有该目录条目）不会被写进清单。
+
+实测（2040 条目的档案）：
+
+| 操作 | 已选 | 还原清单 |
+|---|---|---|
+| 全选 | 2040/2040 | **20 项**（顶层路径） |
+| 取消 1 个深层文件 | 2037/2040 | 118 项（该目录内其余文件需逐条列出） |
+| 只勾选 1 个目录 | 102/2040 | **1 项**（`bucket_03`） |
+| 全不选 | 0/2040 | 空（界面按提示拦截，不允许执行） |
+
+界面层（`restore_dialog.py`）只做渲染与事件转发：`itemChanged` → 更新模型 → 从模型回刷所有节点状态（`_syncing` 防止信号回环），因此父子三态、全选、半选始终与模型一致。
+
+### 8.6 测试
+
+- Python 单元测试 65 个：任务持久化、调度到期边界（daily/weekly/monthly/once）、行协议解析、命令行参数组装、清单文件写入（含 3000 条目长度回归）、数字归一化、选择模型（父子联动/清单压缩/虚拟目录）。
+- C++ 单元测试 66 个（含子集还原：目录前缀匹配、不存在条目报错）+ 集成矩阵 4 组 + 局部还原场景（清单文件/目录子树/1200 条目大批量）。
 - GUI 冒烟：`python python/dataguard_gui.py` 与 `dist/DataGuard/DataGuard.exe` 均通过"启动 5 秒无崩溃"检测。
 
