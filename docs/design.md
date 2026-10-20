@@ -309,3 +309,60 @@ sequenceDiagram
 
 错误密码还原被拒绝；加密档案中检索不到明文片段。
 
+## 8. v0.5 图形界面、定时调度与发布打包
+
+### 8.1 进程与通信架构
+
+```mermaid
+graph LR
+    subgraph Python 进程
+        UI[PySide6 窗口]
+        CLI_CLIENT[cli_client.py]
+        TASKS[tasks.py]
+        SCHED[scheduler.py]
+    end
+    subgraph C++ 进程
+        EXE[dataguard-cli.exe]
+    end
+    UI --> CLI_CLIENT
+    SCHED --> CLI_CLIENT
+    TASKS --> SCHED
+    CLI_CLIENT -->|subprocess| EXE
+    EXE -->|stdout 行协议| CLI_CLIENT
+    CLI_CLIENT -->|信号| UI
+```
+
+### 8.2 Python 模块
+
+| 模块 | 职责 |
+|---|---|
+| `cli_client.py` | 探测 CLI 路径（环境变量 → 打包目录 → 开发目录）；参数组装（纯函数）；subprocess 调用并解析 `PROGRESS/LOG/DONE` |
+| `tasks.py` | 任务模型（含筛选/选项/计划/保留）与 `dataguard_tasks.json` 持久化，损坏文件自动备份 `.bak` |
+| `scheduler.py` | `is_due` 纯函数（manual/once/daily/weekly/monthly）+ QTimer 每分钟检查，到期发射 `taskDue` 信号 |
+| `ui_common.py` | `CliWorker(QThread)` 后台执行避免界面冻结；`ProgressDialog` 进度条与日志面板 |
+| `main_window.py` | 左侧导航（备份历史/任务管理/设置）+ 备份历史表格 + 工具栏 |
+| `backup_wizard.py` | 4 页向导：源目标 → 六类筛选 → 压缩/加密 → 计划与保留 |
+| `restore_dialog.py` | 档案选择、口令、条目树勾选、覆盖选项、还原 |
+| `task_manager.py` | 任务表格 + 启用/禁用、编辑（向导预填）、删除、立即执行 |
+
+### 8.3 发布产物
+
+```
+dist/DataGuard/           （92 MB，可整目录拷贝到其他 Windows 机器）
+├── DataGuard.exe         ← 双击启动（PyInstaller --windowed，无控制台）
+├── dataguard-cli.exe     ← C++ 核心（-static 静态链接）
+└── _internal/            ← Qt/Python 运行时
+```
+
+打包命令：`make dist`。GUI 定位 CLI 的顺序：环境变量 `DATAGUARD_CLI` → `sys.executable` 同目录（打包环境）→ 项目 `build/`（开发环境）→ 当前目录。
+
+### 8.4 PySide6 运行时注记
+
+本机 anaconda 自带的 PySide6 6.12 依赖系统 ICU 的较新版本，加载 QtCore 失败（`DLL load failed`）。已验证 **PySide6 6.8** 可正常使用，安装到 `E:/pyside68` 并由 `python/qt_bootstrap.py` 在导入 Qt 前插入 `sys.path`。换机器且全局 PySide6 可用时，该引导会自动跳过。
+
+### 8.5 测试
+
+- Python 单元测试 41 个：任务持久化、调度到期边界（daily/weekly/monthly/once）、行协议解析、命令行参数组装。
+- C++ 单元测试 64 个 + 集成矩阵 4 组（见 §6/§7）。
+- GUI 冒烟：`python python/dataguard_gui.py` 与 `dist/DataGuard/DataGuard.exe` 均通过"启动 5 秒无崩溃"检测。
+

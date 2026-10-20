@@ -90,11 +90,15 @@ integration: all
 lint:
 	$(PYTHON) -m cpplint --linelength=120 --recursive include src tests 2>&1 || true
 
-# ---------- 发布打包（v0.5 之后可用：生成可双击运行的 exe） ----------
+# ---------- 发布打包（生成可双击运行的 exe） ----------
+# 本机 PySide6 6.12 与系统 ICU 不兼容，使用独立目录中的 6.8 运行时打包
+PYSIDE_RUNTIME := E:/pyside68
+
 dist: all
 	@test -f python/dataguard_gui.py || (echo "python/dataguard_gui.py 未实现（v0.5 提供），当前无法打包 GUI" && exit 1)
-	$(PYTHON) -m PyInstaller --noconfirm --clean --windowed \
+	PYTHONPATH="$(PYSIDE_RUNTIME)" $(PYTHON) -m PyInstaller --noconfirm --clean --windowed \
 	    --name DataGuard --distpath dist --workpath $(BUILD)/pyinstaller \
+	    --hidden-import qt_bootstrap \
 	    python/dataguard_gui.py
 	cp $(BUILD)/dataguard-cli.exe dist/DataGuard/
 	@echo "[OK] dist/DataGuard/DataGuard.exe （双击即可运行）"

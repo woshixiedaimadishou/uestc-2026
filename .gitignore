@@ -6,3 +6,5 @@ dataguard_tasks.json
 *.o
 *.a
 *.exe
+*.spec
+dataguard_tasks_test.json
