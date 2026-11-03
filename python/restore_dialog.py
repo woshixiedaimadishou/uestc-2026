@@ -42,7 +42,8 @@ def qt_state(value: int):
     return Qt.CheckState(value)
 
 
-def browse_directory(edit: QLineEdit, caption: str, parent: QWidget) -> QWidget:
+def browse_directory(edit: QLineEdit, caption: str, parent: QWidget,
+                     start_dir: str = "") -> QWidget:
     container = QWidget(parent)
     layout = QHBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
@@ -50,7 +51,7 @@ def browse_directory(edit: QLineEdit, caption: str, parent: QWidget) -> QWidget:
     button.setFixedWidth(80)
 
     def choose() -> None:
-        start = edit.text().strip() or str(Path.home())
+        start = edit.text().strip() or start_dir or str(Path.home())
         path = QFileDialog.getExistingDirectory(parent, caption, start)
         if path:
             edit.setText(path)
@@ -62,9 +63,10 @@ def browse_directory(edit: QLineEdit, caption: str, parent: QWidget) -> QWidget:
 
 
 class RestoreDialog(QDialog):
-    def __init__(self, client: CliClient, parent=None):
+    def __init__(self, client: CliClient, parent=None, start_dir: str = ""):
         super().__init__(parent)
         self.client = client
+        self.start_dir = start_dir
         self.worker: CliWorker | None = None
         self.progress_dialog: ProgressDialog | None = None
 
@@ -94,7 +96,8 @@ class RestoreDialog(QDialog):
         form = QFormLayout()
         form.addRow("档案", archive_row)
         form.addRow("口令", self.password_edit)
-        form.addRow("目标目录", browse_directory(self.dest_edit, "选择还原目标目录", self))
+        form.addRow("目标目录", browse_directory(self.dest_edit, "选择还原目标目录", self,
+                                                self.start_dir))
 
         self.tree = QTreeWidget()
         self.tree.setColumnCount(2)
@@ -144,7 +147,8 @@ class RestoreDialog(QDialog):
 
     # ---------- 数据加载 ----------
     def choose_archive(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "选择备份档案", str(Path.home()),
+        start = self.archive_edit.text().strip() or self.start_dir or str(Path.home())
+        path, _ = QFileDialog.getOpenFileName(self, "选择备份档案", start,
                                               "DataGuard 档案 (*.bkpk);;所有文件 (*.*)")
         if path:
             self.archive_edit.setText(path)

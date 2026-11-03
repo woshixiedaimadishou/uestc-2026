@@ -37,6 +37,23 @@ class BuildBackupArgsTest(unittest.TestCase):
         self.assertEqual(args[args.index("--password") + 1], "secret")
         self.assertEqual(args[args.index("--name") + 1], "job")
 
+    def test_codec_variants(self):
+        for codec in ("deflate", "huffman", "lz77"):
+            args = build_backup_args(CLI, "src", "dst", codec=codec)
+            self.assertIn("--codec", args)
+            self.assertEqual(args[args.index("--codec") + 1], codec)
+            self.assertNotIn("--compress", args)
+
+    def test_codec_none_means_no_flag(self):
+        args = build_backup_args(CLI, "src", "dst", codec="none")
+        self.assertNotIn("--codec", args)
+        self.assertNotIn("--compress", args)
+
+    def test_codec_wins_over_legacy_compress(self):
+        args = build_backup_args(CLI, "src", "dst", compress=True, codec="lz77")
+        self.assertEqual(args[args.index("--codec") + 1], "lz77")
+        self.assertNotIn("--compress", args)
+
     def test_filters_are_expanded(self):
         filters = {
             "include_exts": [".cpp", ".h"],

@@ -37,7 +37,7 @@ def split_values(text: str) -> list[str]:
     return [item.strip() for item in text.replace("，", ",").split(",") if item.strip()]
 
 
-def browse_widget(edit: QLineEdit, caption: str) -> QWidget:
+def browse_widget(edit: QLineEdit, caption: str, start_dir: str = "") -> QWidget:
     container = QWidget()
     layout = QHBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
@@ -45,7 +45,8 @@ def browse_widget(edit: QLineEdit, caption: str) -> QWidget:
     button.setFixedWidth(80)
 
     def choose() -> None:
-        start = edit.text().strip() or str(Path.home())
+        # 优先级：已填路径 → 默认备份目录 → 用户主目录
+        start = edit.text().strip() or start_dir or str(Path.home())
         path = QFileDialog.getExistingDirectory(container, caption, start)
         if path:
             edit.setText(path)
@@ -57,7 +58,7 @@ def browse_widget(edit: QLineEdit, caption: str) -> QWidget:
 
 
 class SourcePage(QWizardPage):
-    def __init__(self):
+    def __init__(self, start_dir: str = ""):
         super().__init__()
         self.setTitle("第 1 步：源与目标")
         self.setSubTitle("选择要备份的目录、档案保存位置与任务名称")
@@ -67,8 +68,8 @@ class SourcePage(QWizardPage):
         self.name_edit = QLineEdit("backup")
 
         form = QFormLayout(self)
-        form.addRow("源目录", browse_widget(self.source_edit, "选择源目录"))
-        form.addRow("目标目录", browse_widget(self.dest_edit, "选择目标目录"))
+        form.addRow("源目录", browse_widget(self.source_edit, "选择源目录", start_dir))
+        form.addRow("目标目录", browse_widget(self.dest_edit, "选择目标目录", start_dir))
         form.addRow("任务名称", self.name_edit)
         form.addRow(QLabel("提示：档案命名为 <任务名>_<时间戳>.bkpk"))
 
@@ -120,9 +121,14 @@ class OptionsPage(QWizardPage):
     def __init__(self):
         super().__init__()
         self.setTitle("第 3 步：压缩与加密")
-        self.setSubTitle("压缩使用自研 DEFLATE，加密使用自研流密码")
+        self.setSubTitle("可选三种压缩方案；加密使用自研流密码")
 
-        self.compress = QCheckBox("启用 DEFLATE 压缩")
+        self.codec = QComboBox()
+        self.codec.addItem("不压缩（最快）", "none")
+        self.codec.addItem("DEFLATE：LZ77 + Huffman（推荐）", "deflate")
+        self.codec.addItem("仅 Huffman：按字节频率缩码", "huffman")
+        self.codec.addItem("仅 LZ77：只替换重复片段", "lz77")
+
         self.encrypt = QCheckBox("启用加密（需要口令）")
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.Password)
@@ -130,7 +136,10 @@ class OptionsPage(QWizardPage):
         self.confirm.setEchoMode(QLineEdit.Password)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(self.compress)
+        form_codec = QFormLayout()
+        form_codec.addRow("压缩方案", self.codec)
+        layout.addLayout(form_codec)
+        layout.addWidget(QLabel("提示：重复内容多用 DEFLATE；只有字节分布不均时「仅 Huffman」才有收益"))
         layout.addWidget(self.encrypt)
 
         form = QFormLayout()
@@ -250,13 +259,13 @@ class SchedulePage(QWizardPage):
 class BackupWizard(QWizard):
     """新建（或编辑）备份任务的向导。"""
 
-    def __init__(self, parent=None, initial: dict | None = None):
+    def __init__(self, parent=None, initial: dict | None = None, start_dir: str = ""):
         super().__init__(parent)
         self.setWindowTitle("新建备份任务")
         self.setWizardStyle(QWizard.ModernStyle)
         self.resize(640, 480)
 
-        self.source_page = SourcePage()
+        self.source_page = SourcePage(start_dir)
         self.filter_page = FilterPage()
         self.options_page = OptionsPage()
         self.schedule_page = SchedulePage()
@@ -283,7 +292,9 @@ class BackupWizard(QWizard):
         self.filter_page.modified_after.setText(str(filters.get("modified_after", "") or ""))
 
         options = task.get("options", {})
-        self.options_page.compress.setChecked(bool(options.get("compress", False)))
+        codec = options.get("codec") or ("deflate" if options.get("compress") else "none")
+        index = self.options_page.codec.findData(codec)
+        self.options_page.codec.setCurrentIndex(max(0, index))
         self.options_page.encrypt.setChecked(bool(options.get("encrypt", False)))
         self.options_page.password.setText(options.get("password", ""))
         self.options_page.confirm.setText(options.get("password", ""))
@@ -324,7 +335,8 @@ class BackupWizard(QWizard):
         }
 
         options = {
-            "compress": self.options_page.compress.isChecked(),
+            "codec": self.options_page.codec.currentData() or "none",
+            "compress": self.options_page.codec.currentData() not in (None, "none"),
             "encrypt": self.options_page.encrypt.isChecked(),
             "password": self.options_page.password.text(),
         }

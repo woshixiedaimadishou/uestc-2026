@@ -20,7 +20,7 @@
 namespace {
 
 constexpr const char* kProductName = "DataGuard";
-constexpr const char* kVersion = "0.5.1";
+constexpr const char* kVersion = "0.6.0";
 
 std::string wideToUtf8(const std::wstring& w) {
     if (w.empty()) return std::string();
@@ -135,7 +135,9 @@ void printUsage() {
         << "  dataguard-cli --version | --help\n\n"
         << "backup 选项:\n"
         << "  --name <名称>            档案名前缀（默认 backup）\n"
-        << "  --compress               启用 DEFLATE 压缩\n"
+        << "  --compress               启用 DEFLATE 压缩（等价 --codec deflate）\n"
+        << "  --codec <方案>           deflate | huffman | lz77 | none\n"
+        << "                           deflate = LZ77 + Huffman；huffman 只做频率缩码；lz77 只做重复替换\n"
         << "  --encrypt                启用流密码加密\n"
         << "  --password <密码>        加密口令\n"
         << "  --include-ext <.ext>     仅包含指定扩展名（可多次）\n"
@@ -214,7 +216,16 @@ int cmdBackup(const std::vector<std::string>& args) {
         if (opt == "--name" && has_value) {
             cfg.name = args[++i];
         } else if (opt == "--compress") {
-            cfg.options.compress = true;
+            cfg.options.codec = dataguard::Codec::Deflate;
+        } else if (opt == "--codec" && has_value) {
+            const std::string name = args[++i];
+            const dataguard::Codec codec = dataguard::codecFromName(name);
+            if (codec == dataguard::Codec::None && name != "none" && name != "off" && !name.empty()) {
+                std::cerr << "未知压缩方案: " << name
+                          << "（可选 deflate / huffman / lz77 / none）\n";
+                return 1;
+            }
+            cfg.options.codec = codec;
         } else if (opt == "--encrypt") {
             cfg.options.encrypt = true;
         } else if (opt == "--password" && has_value) {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from qt_bootstrap import ensure as _ensure_qt_runtime
@@ -37,6 +38,21 @@ from tasks import TaskStore
 from ui_common import CliWorker, ProgressDialog
 
 DEFAULT_ARCHIVE_DIR = Path.home() / "DataGuardBackups"
+SETTINGS_FILE = Path(__file__).resolve().parent / "dataguard_settings.json"
+
+
+def load_settings() -> dict:
+    try:
+        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def persist_settings(data: dict) -> None:
+    try:
+        SETTINGS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def format_size(size: int) -> str:
@@ -64,12 +80,18 @@ class MainWindow(QMainWindow):
         self.client = CliClient()
         self.store = TaskStore()
         self.store.load()
+        self.settings = load_settings()
 
-        self.archive_dir = DEFAULT_ARCHIVE_DIR
+        # 默认备份目录：优先用设置里保存的路径
+        self.archive_dir = Path(self.settings.get("archive_dir") or DEFAULT_ARCHIVE_DIR)
         try:
             self.archive_dir.mkdir(parents=True, exist_ok=True)
         except OSError:
-            self.archive_dir = Path.cwd()
+            self.archive_dir = DEFAULT_ARCHIVE_DIR
+            try:
+                self.archive_dir.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                self.archive_dir = Path.cwd()
 
         self.scheduler = Scheduler(self.store, self)
         self.scheduler.taskDue.connect(self.on_task_due)
@@ -196,6 +218,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "目录不可用", str(exc))
             return
         self.archive_dir = candidate
+        self.settings["archive_dir"] = str(candidate)
+        persist_settings(self.settings)
         self.refresh_history()
         self.update_status()
         QMessageBox.information(self, "已保存", "设置已保存")
@@ -240,7 +264,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, f"档案内容（{len(entries)} 个条目）", "\n".join(lines))
 
     def new_backup(self) -> None:
-        wizard = BackupWizard(self)
+        wizard = BackupWizard(self, start_dir=str(self.archive_dir))
         if wizard.exec() != BackupWizard.Accepted:
             return
         config = wizard.result_config()
@@ -259,7 +283,7 @@ class MainWindow(QMainWindow):
                                     "定时任务已保存，可在「任务管理」中查看")
 
     def open_restore(self) -> None:
-        dialog = RestoreDialog(self.client, self)
+        dialog = RestoreDialog(self.client, self, start_dir=str(self.archive_dir))
         dialog.exec()
 
     def run_task(self, task: dict) -> None:
@@ -283,7 +307,7 @@ class MainWindow(QMainWindow):
             "source": config.get("source", ""),
             "dest": config.get("dest_dir", ""),
             "name": config.get("name", "backup"),
-            "compress": bool(options.get("compress", False)),
+            "codec": options.get("codec") or ("deflate" if options.get("compress") else "none"),
             "encrypt": bool(options.get("encrypt", False)),
             "password": options.get("password", ""),
             "filters": config.get("filter", {}),

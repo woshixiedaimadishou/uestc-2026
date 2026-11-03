@@ -62,10 +62,10 @@ bool ArchiveReader::open(const std::filesystem::path& path, const std::string& p
         return false;
     }
 
-    compressed_ = (compressor_id == kCompressorDeflate);
+    codec_ = codecFromId(compressor_id);
     encrypted_ = (flags & kFlagEncrypted) != 0;
 
-    if (compressor_id != kCompressorNone && compressor_id != kCompressorDeflate) {
+    if (compressor_id > kCompressorLz77) {
         last_error_ = "不支持的压缩算法（id=" + std::to_string(compressor_id) + "）";
         return false;
     }
@@ -211,10 +211,11 @@ bool ArchiveReader::readEntryData(const FileEntry& entry, std::vector<uint8_t>& 
     if (end > file_data_.size()) return false;
     out.assign(file_data_.begin() + begin, file_data_.begin() + end);
 
-    if (compressed_) {
-        DeflateCompressor deflate;
+    if (codec_ != Codec::None) {
+        const auto compressor = makeCompressor(codec_);
+        if (!compressor) return false;
         std::vector<uint8_t> decompressed;
-        if (!deflate.decompress(out, decompressed)) return false;
+        if (!compressor->decompress(out, decompressed)) return false;
         out.swap(decompressed);
     }
     return true;

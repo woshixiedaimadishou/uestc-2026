@@ -9,3 +9,4 @@ dataguard_tasks.json
 *.spec
 dataguard_tasks_test.json
 .vscode/
+dataguard_settings.json

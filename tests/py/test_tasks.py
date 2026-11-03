@@ -31,6 +31,24 @@ class TaskModelTest(unittest.TestCase):
         self.assertIn("filter", filled)
         self.assertIn("retention", filled)
         self.assertEqual(filled["schedule"]["hour"], 8)
+        self.assertEqual(filled["options"]["codec"], "none")
+
+    def test_legacy_compress_flag_migrates_to_codec(self):
+        """旧配置只有 compress 开关，应迁移成 deflate。"""
+        filled = fill_defaults({"name": "old", "options": {"compress": True}})
+        self.assertEqual(filled["options"]["codec"], "deflate")
+        self.assertTrue(filled["options"]["compress"])
+
+        plain = fill_defaults({"name": "old", "options": {"compress": False}})
+        self.assertEqual(plain["options"]["codec"], "none")
+        self.assertFalse(plain["options"]["compress"])
+
+    def test_codec_flag_keeps_compress_in_sync(self):
+        filled = fill_defaults({"name": "t", "options": {"codec": "huffman"}})
+        self.assertTrue(filled["options"]["compress"])
+
+        filled = fill_defaults({"name": "t", "options": {"codec": "none"}})
+        self.assertFalse(filled["options"]["compress"])
 
     def test_describe_schedule(self):
         self.assertEqual(describe_schedule({"type": "manual"}), "手动执行")

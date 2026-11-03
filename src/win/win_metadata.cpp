@@ -4,7 +4,9 @@
 #include <aclapi.h>
 
 #include <cstdint>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 
 #include "dataguard/path_utils.h"
 
@@ -59,14 +61,31 @@ uint64_t makeFileId(const BY_HANDLE_FILE_INFORMATION& info) {
     return hash;
 }
 
-std::string queryOwner(const std::filesystem::path& p) {
-    PSID sid = nullptr;
-    PSECURITY_DESCRIPTOR sd = nullptr;
-    const DWORD rc = GetNamedSecurityInfoW(
-        const_cast<LPWSTR>(p.c_str()), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
-        &sid, nullptr, nullptr, nullptr, &sd);
-    if (rc != ERROR_SUCCESS || sid == nullptr) return std::string();
+// SID → "DOMAIN\user" 的进程级缓存。
+// 一个目录树里的文件通常只属于少数几个 SID，逐个调用 LookupAccountSidW
+// 会走 LSA，实测每次约 0.23ms，两万多个文件就是 5 秒以上。
+std::mutex g_owner_mutex;
+std::unordered_map<std::string, std::string> g_owner_cache;
 
+// 用 SID 的二进制内容做缓存键（不依赖字符串转换）
+std::string sidKey(PSID sid) {
+    const auto* s = static_cast<const SID*>(sid);
+    if (s == nullptr) return std::string();
+    const DWORD count = *GetSidSubAuthorityCount(const_cast<PSID>(sid));
+    std::string key;
+    key.reserve(1 + sizeof(SID_IDENTIFIER_AUTHORITY) + 1 + count * sizeof(DWORD));
+    key.push_back(static_cast<char>(s->Revision));
+    key.append(reinterpret_cast<const char*>(&s->IdentifierAuthority),
+               sizeof(SID_IDENTIFIER_AUTHORITY));
+    key.push_back(static_cast<char>(count));
+    for (DWORD i = 0; i < count; ++i) {
+        const DWORD value = *GetSidSubAuthority(const_cast<PSID>(sid), i);
+        key.append(reinterpret_cast<const char*>(&value), sizeof(value));
+    }
+    return key;
+}
+
+std::string lookupSidName(PSID sid) {
     wchar_t name[257] = {};
     wchar_t domain[257] = {};
     DWORD name_len = 257;
@@ -82,8 +101,34 @@ std::string queryOwner(const std::filesystem::path& p) {
         full.append(name, name_len);
         result = wideToUtf8(full);
     }
-    LocalFree(sd);
     return result;
+}
+
+std::string queryOwner(const std::filesystem::path& p) {
+    PSID sid = nullptr;
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    const DWORD rc = GetNamedSecurityInfoW(
+        const_cast<LPWSTR>(p.c_str()), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
+        &sid, nullptr, nullptr, nullptr, &sd);
+    if (rc != ERROR_SUCCESS || sid == nullptr) return std::string();
+
+    const std::string key = sidKey(sid);
+    {
+        std::lock_guard<std::mutex> lock(g_owner_mutex);
+        const auto it = g_owner_cache.find(key);
+        if (it != g_owner_cache.end()) {
+            LocalFree(sd);
+            return it->second;
+        }
+    }
+
+    const std::string name = lookupSidName(sid);
+    {
+        std::lock_guard<std::mutex> lock(g_owner_mutex);
+        g_owner_cache.emplace(key, name);
+    }
+    LocalFree(sd);
+    return name;
 }
 
 }  // namespace
@@ -95,6 +140,51 @@ bool readFileMetadata(const std::filesystem::path& path,
     entry.abs_path = std::filesystem::absolute(path, ec);
     if (ec) entry.abs_path = path;
 
+    // 只开一次句柄：属性、三个时间、大小、硬链接数、文件 ID 一次拿全。
+    // 原实现是 symlink_status + file_size + CreateFileW 三次系统调用，两万多个文件时开销明显。
+    HANDLE handle = openForAttributes(path);
+    if (handle != INVALID_HANDLE_VALUE) {
+        BY_HANDLE_FILE_INFORMATION info = {};
+        const bool got = GetFileInformationByHandle(handle, &info) != 0;
+        CloseHandle(handle);
+
+        if (got) {
+            entry.attrs = info.dwFileAttributes;
+            entry.hard_link_count = info.nNumberOfLinks;
+            entry.file_id = makeFileId(info);
+            entry.ctime = fileTimeToUnix(info.ftCreationTime);
+            entry.atime = fileTimeToUnix(info.ftLastAccessTime);
+            entry.mtime = fileTimeToUnix(info.ftLastWriteTime);
+
+            if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+                entry.kind = FileKind::Directory;
+                entry.size = 0;
+            } else if ((info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+                // 重解析点里只有真正的符号链接按链接处理，其余（junction/占位符）记为 Other
+                std::error_code link_ec;
+                const auto status = std::filesystem::symlink_status(path, link_ec);
+                if (!link_ec && std::filesystem::is_symlink(status)) {
+                    entry.kind = FileKind::Symlink;
+                    std::error_code target_ec;
+                    const auto target = std::filesystem::read_symlink(path, target_ec);
+                    if (!target_ec) entry.link_target_utf8 = pathToUtf8(target);
+                    entry.size = 0;
+                } else {
+                    entry.kind = FileKind::Other;
+                    entry.size = 0;
+                }
+            } else {
+                entry.kind = FileKind::File;
+                entry.size = (static_cast<uint64_t>(info.nFileSizeHigh) << 32) |
+                             static_cast<uint64_t>(info.nFileSizeLow);
+            }
+
+            entry.owner = queryOwner(path);
+            return true;
+        }
+    }
+
+    // 回退路径：句柄拿不到时（权限不足、特殊文件）退回 filesystem 查询
     const auto status = std::filesystem::symlink_status(path, ec);
     if (ec || status.type() == std::filesystem::file_type::not_found) {
         if (error) *error = "无法读取文件状态: " + pathToUtf8(path);
@@ -120,27 +210,8 @@ bool readFileMetadata(const std::filesystem::path& path,
         entry.size = 0;
     }
 
-    HANDLE handle = openForAttributes(path);
-    if (handle != INVALID_HANDLE_VALUE) {
-        FILETIME creation = {};
-        FILETIME access = {};
-        FILETIME write = {};
-        if (GetFileTime(handle, &creation, &access, &write)) {
-            entry.ctime = fileTimeToUnix(creation);
-            entry.atime = fileTimeToUnix(access);
-            entry.mtime = fileTimeToUnix(write);
-        }
-        BY_HANDLE_FILE_INFORMATION info = {};
-        if (GetFileInformationByHandle(handle, &info)) {
-            entry.attrs = info.dwFileAttributes;
-            entry.hard_link_count = info.nNumberOfLinks;
-            entry.file_id = makeFileId(info);
-        }
-        CloseHandle(handle);
-    } else {
-        const DWORD attrs = GetFileAttributesW(path.c_str());
-        if (attrs != INVALID_FILE_ATTRIBUTES) entry.attrs = attrs;
-    }
+    const DWORD attrs = GetFileAttributesW(path.c_str());
+    if (attrs != INVALID_FILE_ATTRIBUTES) entry.attrs = attrs;
 
     entry.owner = queryOwner(path);
     return true;

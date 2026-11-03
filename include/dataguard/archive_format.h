@@ -12,9 +12,7 @@ constexpr uint16_t kVersion = 1;
 constexpr uint16_t kFlagCompressed = 0x0001;
 constexpr uint16_t kFlagEncrypted = 0x0002;
 
-constexpr uint8_t kCompressorNone = 0;
-constexpr uint8_t kCompressorDeflate = 1;
-
+// 压缩方案编号见 compressor.h（Codec 枚举）
 constexpr uint8_t kCipherNone = 0;
 constexpr uint8_t kCipherStream = 1;
 

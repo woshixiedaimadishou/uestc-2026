@@ -1,10 +1,14 @@
 #include "dataguard/backup_manager.h"
 
+#include <algorithm>
+#include <atomic>
 #include <ctime>
 #include <iomanip>
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "dataguard/archive_reader.h"
@@ -72,7 +76,25 @@ bool BackupManager::run(const BackupTaskConfig& cfg, ProgressReporter* reporter)
             if (reporter) reporter->on_log(LogLevel::Warn, message);
         });
 
-    // 2. 写档案
+    // 2. 预先标记硬链接引用（与写入器规则一致），避免对重复文件做无谓的读盘与压缩
+    {
+        std::unordered_map<uint64_t, std::string> seen;
+        for (auto& entry : entries) {
+            if (entry.kind != FileKind::File || entry.hard_link_count <= 1 || entry.file_id == 0) {
+                continue;
+            }
+            const auto it = seen.find(entry.file_id);
+            if (it != seen.end()) {
+                entry.kind = FileKind::Hardlink;
+                entry.link_target_utf8 = it->second;
+                entry.size = 0;
+            } else {
+                seen.emplace(entry.file_id, entry.rel_path_utf8);
+            }
+        }
+    }
+
+    // 3. 并行准备（读文件 + 算 CRC + 压缩），登记仍按原顺序串行进行
     ArchiveWriter writer;
     if (!writer.open(archive, cfg.options)) {
         last_error_ = writer.last_error();
@@ -81,18 +103,54 @@ bool BackupManager::run(const BackupTaskConfig& cfg, ProgressReporter* reporter)
     }
 
     const uint64_t total = static_cast<uint64_t>(entries.size());
+    std::vector<PreparedEntry> prepared(total);
+
+    unsigned workers = std::thread::hardware_concurrency();
+    if (workers == 0) workers = 1;
+    workers = std::min(workers, 8u);
+    if (total < 64) workers = 1;  // 小任务不值得起线程
+
+    std::atomic<size_t> next_index{0};
+    std::atomic<size_t> ready_count{0};
+    auto prepareWorker = [&]() {
+        while (true) {
+            const size_t index = next_index.fetch_add(1);
+            if (index >= total) break;
+            ArchiveWriter::prepare(entries[index], cfg.options, prepared[index]);
+            const size_t done = ready_count.fetch_add(1) + 1;
+            if (reporter && workers > 1 && done % 500 == 0) {
+                reporter->on_log(LogLevel::Info,
+                                 "已读取 " + std::to_string(done) + "/" + std::to_string(total));
+            }
+        }
+    };
+
+    if (workers <= 1) {
+        prepareWorker();
+    } else {
+        std::vector<std::thread> pool;
+        pool.reserve(workers - 1);
+        for (unsigned i = 1; i < workers; ++i) pool.emplace_back(prepareWorker);
+        prepareWorker();
+        for (auto& thread : pool) thread.join();
+    }
+
+    // 4. 顺序登记（保证条目顺序、偏移与硬链接指向确定）
     uint64_t success = 0;
     uint64_t failed = 0;
     for (uint64_t i = 0; i < total; ++i) {
-        const FileEntry& entry = entries[static_cast<size_t>(i)];
-        if (reporter) reporter->on_file_start(entry.rel_path_utf8, i + 1, total);
-        if (writer.add(entry)) {
+        PreparedEntry& item = prepared[static_cast<size_t>(i)];
+        if (reporter) reporter->on_file_start(entries[static_cast<size_t>(i)].rel_path_utf8,
+                                              i + 1, total);
+        if (item.ok && writer.addPrepared(std::move(item))) {
             ++success;
         } else {
             ++failed;
-            if (reporter) reporter->on_log(LogLevel::Warn, writer.last_error());
+            const std::string message = item.error.empty() ? writer.last_error() : item.error;
+            if (reporter) reporter->on_log(LogLevel::Warn, message);
         }
     }
+
 
     if (!writer.close()) {
         last_error_ = writer.last_error();

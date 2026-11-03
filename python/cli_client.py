@@ -108,12 +108,15 @@ def build_backup_args(cli_path,
                       dest,
                       name: str = "backup",
                       compress: bool = False,
+                      codec: str = "",
                       encrypt: bool = False,
                       password: str = "",
                       filters: Optional[dict] = None) -> list[str]:
-    """组装 backup 命令参数。"""
+    """组装 backup 命令参数。codec 优先于 compress（兼容旧调用）。"""
     args = [str(cli_path), "backup", str(source), str(dest), "--name", name or "backup"]
-    if compress:
+    if codec and codec != "none":
+        args.extend(["--codec", codec])
+    elif compress:
         args.append("--compress")
     if encrypt:
         args.extend(["--encrypt", "--password", password])

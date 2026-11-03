@@ -420,9 +420,60 @@ SelectionTree(entries)                 # 由档案条目构建树
 
 界面层（`restore_dialog.py`）只做渲染与事件转发：`itemChanged` → 更新模型 → 从模型回刷所有节点状态（`_syncing` 防止信号回环），因此父子三态、全选、半选始终与模型一致。
 
-### 8.6 测试
+### 8.6 三种压缩方案（v0.6）
 
-- Python 单元测试 65 个：任务持久化、调度到期边界（daily/weekly/monthly/once）、行协议解析、命令行参数组装、清单文件写入（含 3000 条目长度回归）、数字归一化、选择模型（父子联动/清单压缩/虚拟目录）。
-- C++ 单元测试 66 个（含子集还原：目录前缀匹配、不存在条目报错）+ 集成矩阵 4 组 + 局部还原场景（清单文件/目录子树/1200 条目大批量）。
+档案头第 8 字节 `compressor_id` 决定读取时用哪种解码器：
+
+| id | 方案 | 类 | 算法 | 适用 |
+|---|---|---|---|---|
+| 0 | none | `NoCompressor` | 原样存储 | 已压缩格式（jpg/zip/.ipch） |
+| 1 | deflate | `DeflateCompressor` | LZ77 + 固定 Huffman（RFC 1951 子集） | 默认推荐 |
+| 2 | huffman | `HuffmanOnlyCompressor` | 动态规范化 Huffman（码长表 RLE） | 字节频率极不均匀 |
+| 3 | lz77 | `Lz77OnlyCompressor` | 只做重复替换，token 位打包 | 大段重复、不想引入码表 |
+
+`Codec` 枚举 + `makeCompressor(codec)` 工厂（`src/algo/compressor.cpp`）把方案选择集中在档案层，写入器只关心 `options.codec`。
+
+**huffman 格式**（每块自带码表，`src/algo/huffman_only.cpp`）：
+
+```
+[u8 version=1][u32 original_size][u16 table_bytes][RLE 码长表][位流]
+RLE 码长表：256 个符号按顺序压成 (code_len, run) 对，未使用符号 run 很长，表通常只有几十字节
+```
+
+建树用频率小顶堆，码长上限 15；若超限退化为“出现过的符号统一 8 位”（仍是合法前缀码）。解码按码长分组走规范化解码。
+
+**lz77 格式**（`src/algo/lz77_only.cpp`）：
+
+```
+[u8 version=1][u32 original_size][位流]
+每个 token：1 位标志 0=字面 → 8 位字节值；1=匹配 → 8 位 (长度-3) + 15 位 (距离-1)
+```
+
+一个最长 258 的匹配只花 24 位，字面 9 位（比原文件的 8 位略贵，这是不做 Huffman 的代价）。
+
+### 8.7 打包性能优化（v0.6）
+
+基线：`C:\Users\曾俊凯\Desktop\code`，23914 个文件 / 443 MB。
+
+| 阶段 | 优化前 | 优化后 |
+|---|---|---|
+| 扫描 + 元数据 | 11.2 s | 5.8 s |
+| 打包（none） | 20.5 s | 8.2 s |
+| 打包（deflate） | 29.9 s | 10.6 s |
+
+三处改动：
+
+1. **属主查询缓存**（`src/win/win_metadata.cpp`）：原来每个文件都 `LookupAccountSidW`，实测 0.23 ms/次，2.4 万个文件约 5.5 s。改为按 SID 二进制内容缓存 `DOMAIN\user`（一个目录树通常只有几个 SID），省掉几乎全部 LSA 往返。
+2. **一次打开拿全属性**：原实现 `symlink_status` + `file_size` + `CreateFileW` 三次系统调用，改为一次 `CreateFileW` + `GetFileInformationByHandle`（大小/三时间/属性/硬链接数/文件 ID）。只有重解析点才额外查询链接类型。
+3. **流式写出 + 并行准备**：
+   - `close()` 不再把 `table + 所有文件数据` 拼成一个大 body（原实现多一次 443 MB memcpy），改为 header → table → 逐条数据直接写出；
+   - 加密路径改为 `StreamCipherStream` 分块加密，密钥流位置跨块保持（与旧档案完全兼容）；
+   - `BackupManager` 拆成「并行 prepare（读文件 + CRC + 压缩）」与「串行 addPrepared（登记顺序、偏移、硬链接指向）」，用 `hardware_concurrency()（上限 8）` 个线程，任务小于 64 个条目时退化为单线程，保证小任务开销不增加。
+
+### 8.8 测试
+
+- Python 单元测试 70 个：任务持久化与 codec 迁移、调度到期边界、行协议解析、命令行参数组装（含 codec 三种取值）、清单文件写入（3000 条目长度回归）、数字归一化、选择模型。
+- C++ 单元测试 85 个（含三种压缩方案各 5 个往返用例 + 方案注册表 + 相对效果断言；子集还原：目录前缀匹配、不存在条目报错）。
+- 集成矩阵 6 组：plain / deflate / huffman / lz77 / 加密 / 压缩+加密，外加部分还原与 1200 条目大批量场景。
 - GUI 冒烟：`python python/dataguard_gui.py` 与 `dist/DataGuard/DataGuard.exe` 均通过"启动 5 秒无崩溃"检测。
 

@@ -39,7 +39,7 @@ def default_task() -> dict:
         "source": "",
         "dest_dir": "",
         "filter": default_filter(),
-        "options": {"compress": False, "encrypt": False, "password": ""},
+        "options": {"codec": "none", "compress": False, "encrypt": False, "password": ""},
         "schedule": {
             "type": "manual",
             "hour": 8,
@@ -55,6 +55,11 @@ def default_task() -> dict:
 
 def fill_defaults(task: dict) -> dict:
     """补齐缺省字段（兼容旧版配置文件）。"""
+    # 先做旧配置迁移：老版本只有 compress 开关，没有 codec 字段
+    options = task.get("options")
+    if isinstance(options, dict) and "codec" not in options:
+        options["codec"] = "deflate" if options.get("compress") else "none"
+
     base = default_task()
     for key, value in base.items():
         if key not in task:
@@ -64,6 +69,10 @@ def fill_defaults(task: dict) -> dict:
                 task[key].setdefault(sub_key, sub_value)
     if not task.get("id"):
         task["id"] = new_task_id()
+
+    options = task.get("options")
+    if isinstance(options, dict):
+        options["compress"] = options.get("codec") not in (None, "none")
     return task
 
 

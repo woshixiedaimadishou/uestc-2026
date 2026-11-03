@@ -76,7 +76,12 @@
 二、技术与实现约定
 - 开发语言：C++17（全部核心业务）；用户界面：Python 3.11 + PySide6（脚本语言，符合"用户界面可以采用脚本语言"的要求）。
 - 构建：Makefile（w64devkit g++ 12.1.0）；另提供 cmake 3.30.3 环境（可选）。
-- 压缩解压：自研 DEFLATE 算法（LZ77 滑动窗口匹配 + 固定 Huffman 编码，遵循 RFC 1951），不使用 zlib 等第三方库直接实现。
+- 压缩解压：自研三套方案（遵循 RFC 1951 的 DEFLATE 为主）：
+  - `deflate`：LZ77 找重复 + 固定 Huffman 缩码（默认推荐，档案头 compressor_id=1）
+  - `huffman`：只做动态 Huffman（按本块字节频率建表，码长表 RLE 存储，id=2）
+  - `lz77`：只做重复替换（token 位打包：1 位标志 + 字面 8 位 / 长度 8 位 + 距离 15 位，id=3）
+  - `none`：不压缩（id=0）
+  - 不使用 zlib 等第三方库；三种方案都有往返单元测试与集成测试。
 - 打包解包：自研 BKPK 容器格式（固定头 + 条目表 + 数据区）。
 - 加密解密：自研流密码（口令 + 随机 IV，KSA/PRGA）。
 - 测试：gtest 白盒单元测试（C++ 核心）+ Python unittest + 集成测试脚本；测试用例总数 ≥15，覆盖单元测试与集成测试两类以上。
@@ -99,3 +104,17 @@ make demo
 - 校验项：位流按位序重新装字节是否自洽；Python 标准库 zlib（raw deflate, wbits=-15）能否解开我们的位流；CLI 备份还原是否一致 + 压缩/未压缩档案体积对比。
 - 换样本：python tools/deflate_visualize.py --text "..."（ASCII）或 --file README.md（支持中文/二进制）。
 - 只想要中间数据：build/deflate_probe.exe --text "abcabcabcabcabc"（输出 JSON）。
+
+六、性能（实测：C:\Users\曾俊凯\Desktop\code，23914 个文件 / 443 MB）
+| 阶段 | 优化前 | 优化后 | 主要手段 |
+|---|---|---|---|
+| 扫描 + 元数据 | 11.2 s | 5.8 s | SID→用户名缓存（省掉 2 万多次 LSA 查询）、一次 CreateFileW 取全属性 |
+| 打包（不压缩） | 20.5 s | 8.2 s | 去掉整包 body 拷贝，改为流式写出 |
+| 打包（DEFLATE） | 29.9 s | 10.6 s | 读文件/压缩多线程并行（顺序登记保证档案确定性）+ 上述两项 |
+| 打包（仅 Huffman） | — | 9.6 s（档案 321.5 MB） | 同上 |
+| 打包（仅 LZ77） | — | 10.2 s（档案 234.3 MB） | 同上 |
+
+压缩方案选择建议：
+- 代码/文本/日志：`deflate`（重复多，效果最好）
+- 已是压缩格式（jpg/zip/mp4/.ipch）：`none` 或 `lz77`（再压无收益，甚至变大）
+- 字节分布极不均匀、但重复很少：`huffman`

@@ -10,8 +10,8 @@ GTEST_INC := $(GTEST_SRC)/include
 
 BUILD   := build
 OBJ     := $(BUILD)/obj
-CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -Iinclude -DUNICODE -D_UNICODE
-LDFLAGS  := -static -ladvapi32 -luser32 -lshell32
+CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -Iinclude -DUNICODE -D_UNICODE -pthread
+LDFLAGS  := -static -pthread -ladvapi32 -luser32 -lshell32
 
 CORE_SRCS := \
     src/core/path_utils.cpp \
@@ -24,6 +24,9 @@ CORE_SRCS := \
     src/algo/huffman.cpp \
     src/algo/lz77.cpp \
     src/algo/deflate.cpp \
+    src/algo/compressor.cpp \
+    src/algo/huffman_only.cpp \
+    src/algo/lz77_only.cpp \
     src/algo/stream_cipher.cpp \
     src/app/backup_manager.cpp \
     src/app/retention.cpp \
@@ -37,6 +40,7 @@ TEST_SRCS := \
     tests/test_scanner.cpp \
     tests/test_archive.cpp \
     tests/test_deflate.cpp \
+    tests/test_codecs.cpp \
     tests/test_cipher.cpp \
     tests/test_backup_restore.cpp
 

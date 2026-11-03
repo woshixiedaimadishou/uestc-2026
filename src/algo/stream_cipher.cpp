@@ -18,39 +18,46 @@ void streamXor(const std::string& password,
                const std::vector<uint8_t>& iv,
                const std::vector<uint8_t>& in,
                std::vector<uint8_t>& out) {
+    StreamCipherStream stream(password, iv);
+    stream.process(in.data(), in.size(), out);
+}
+
+}  // namespace
+
+StreamCipherStream::StreamCipherStream(const std::string& password,
+                                       const std::vector<uint8_t>& iv) {
     std::vector<uint8_t> key(password.begin(), password.end());
     key.insert(key.end(), iv.begin(), iv.end());
     if (key.empty()) key.push_back(0);
 
-    uint8_t s[256];
-    for (int i = 0; i < 256; ++i) s[i] = static_cast<uint8_t>(i);
+    for (int i = 0; i < 256; ++i) s_[i] = static_cast<uint8_t>(i);
 
     int j = 0;
     for (int i = 0; i < 256; ++i) {
-        j = (j + s[i] + key[static_cast<size_t>(i) % key.size()]) & 0xFF;
-        std::swap(s[i], s[j]);
+        j = (j + s_[i] + key[static_cast<size_t>(i) % key.size()]) & 0xFF;
+        std::swap(s_[i], s_[j]);
     }
 
-    int i_state = 0;
-    j = 0;
-    // 丢弃前 256 字节输出（RC4 惯例，规避弱密钥）
+    // 丢弃前 256 字节输出（RC4 惯例，规避弱密钥）。
+    // 注意：j_ 必须保留到这里的状态，否则密钥流与旧档案不一致。
     for (int k = 0; k < 256; ++k) {
-        i_state = (i_state + 1) & 0xFF;
-        j = (j + s[i_state]) & 0xFF;
-        std::swap(s[i_state], s[j]);
-    }
-
-    out.resize(in.size());
-    for (size_t k = 0; k < in.size(); ++k) {
-        i_state = (i_state + 1) & 0xFF;
-        j = (j + s[i_state]) & 0xFF;
-        std::swap(s[i_state], s[j]);
-        const uint8_t keystream = s[(s[i_state] + s[j]) & 0xFF];
-        out[k] = static_cast<uint8_t>(in[k] ^ keystream);
+        i_ = (i_ + 1) & 0xFF;
+        j_ = (j_ + s_[i_]) & 0xFF;
+        std::swap(s_[i_], s_[j_]);
     }
 }
 
-}  // namespace
+void StreamCipherStream::process(const uint8_t* data, size_t size,
+                                 std::vector<uint8_t>& out) {
+    out.resize(size);
+    for (size_t k = 0; k < size; ++k) {
+        i_ = (i_ + 1) & 0xFF;
+        j_ = (j_ + s_[i_]) & 0xFF;
+        std::swap(s_[i_], s_[j_]);
+        const uint8_t keystream = s_[(s_[i_] + s_[j_]) & 0xFF];
+        out[k] = static_cast<uint8_t>(data[k] ^ keystream);
+    }
+}
 
 void StreamCipher::generateIv() const {
     if (iv_.size() == 16) return;

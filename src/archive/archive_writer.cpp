@@ -9,8 +9,8 @@
 #include <vector>
 
 #include "dataguard/cipher.h"
+#include "dataguard/compressor.h"
 #include "dataguard/crc32.h"
-#include "dataguard/deflate.h"
 #include "dataguard/path_utils.h"
 
 namespace dataguard {
@@ -33,6 +33,8 @@ bool ArchiveWriter::open(const std::filesystem::path& path, const ArchiveOptions
 
     path_ = path;
     options_ = options;
+    // 兼容旧的 compress 开关
+    if (options_.compress && options_.codec == Codec::None) options_.codec = Codec::Deflate;
     entries_.clear();
     datas_.clear();
     total_data_size_ = 0;
@@ -48,14 +50,76 @@ bool ArchiveWriter::open(const std::filesystem::path& path, const ArchiveOptions
     return true;
 }
 
+bool ArchiveWriter::prepare(const FileEntry& entry, const ArchiveOptions& options,
+                            PreparedEntry& out) {
+    out.entry = entry;
+    out.data.clear();
+    out.error.clear();
+    out.ok = false;
+
+    const Codec codec = (options.compress && options.codec == Codec::None)
+                            ? Codec::Deflate
+                            : options.codec;
+
+    if (out.entry.kind == FileKind::File) {
+        std::ifstream in(out.entry.abs_path, std::ios::binary);
+        if (!in) {
+            out.error = "无法读取文件: " + pathToUtf8(out.entry.abs_path);
+            return false;
+        }
+        out.data.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        out.entry.size = static_cast<uint64_t>(out.data.size());
+        out.entry.checksum = crc32(out.data.data(), out.data.size());
+
+        // 压缩（checksum 始终记录原始数据 CRC；stored_size 在登记时回填）
+        if (codec != Codec::None && !out.data.empty()) {
+            const auto compressor = makeCompressor(codec);
+            if (!compressor) {
+                out.error = "不支持的压缩方案";
+                return false;
+            }
+            std::vector<uint8_t> compressed;
+            if (!compressor->compress(out.data, compressed)) {
+                out.error = "压缩失败: " + out.entry.rel_path_utf8;
+                return false;
+            }
+            out.data.swap(compressed);
+        }
+    } else {
+        // 目录 / 符号链接 / 硬链接引用 / 其他类型：无数据区内容
+        out.entry.size = 0;
+        out.entry.checksum = 0;
+    }
+
+    out.ok = true;
+    return true;
+}
+
 bool ArchiveWriter::add(const FileEntry& entry) {
     if (!opened_ || closed_) {
         last_error_ = "档案未打开";
         return false;
     }
+    PreparedEntry prepared;
+    if (!prepare(entry, options_, prepared)) {
+        last_error_ = prepared.error;
+        return false;
+    }
+    return addPrepared(std::move(prepared));
+}
 
-    FileEntry record = entry;
-    std::vector<uint8_t> data;
+bool ArchiveWriter::addPrepared(PreparedEntry&& prepared) {
+    if (!opened_ || closed_) {
+        last_error_ = "档案未打开";
+        return false;
+    }
+    if (!prepared.ok) {
+        last_error_ = prepared.error.empty() ? "条目准备失败" : prepared.error;
+        return false;
+    }
+
+    FileEntry record = std::move(prepared.entry);
+    std::vector<uint8_t> data = std::move(prepared.data);
 
     // 硬链接去重：同一 file_id 的后续条目只写引用，不重复存数据
     if (record.kind == FileKind::File && record.hard_link_count > 1 && record.file_id != 0) {
@@ -65,35 +129,10 @@ bool ArchiveWriter::add(const FileEntry& entry) {
             record.link_target_utf8 = it->second;  // 指向已存储的首个条目
             record.size = 0;
             record.checksum = 0;
+            data.clear();
         } else {
             seen_file_ids_[record.file_id] = record.rel_path_utf8;
         }
-    }
-
-    if (record.kind == FileKind::File) {
-        std::ifstream in(record.abs_path, std::ios::binary);
-        if (!in) {
-            last_error_ = "无法读取文件: " + pathToUtf8(record.abs_path);
-            return false;
-        }
-        data.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-        record.size = static_cast<uint64_t>(data.size());
-        record.checksum = crc32(data.data(), data.size());
-    } else {
-        // 目录 / 符号链接 / 硬链接引用 / 其他类型：无数据区内容
-        record.size = 0;
-        record.checksum = 0;
-    }
-
-    // DEFLATE 压缩（仅对普通文件数据；checksum 始终记录原始数据 CRC）
-    if (record.kind == FileKind::File && options_.compress && !data.empty()) {
-        DeflateCompressor deflate;
-        std::vector<uint8_t> compressed;
-        if (!deflate.compress(data, compressed)) {
-            last_error_ = "压缩失败: " + record.rel_path_utf8;
-            return false;
-        }
-        data.swap(compressed);
     }
 
     record.stored_size = static_cast<uint64_t>(data.size());
@@ -104,6 +143,7 @@ bool ArchiveWriter::add(const FileEntry& entry) {
     datas_.push_back(std::move(data));
     return true;
 }
+
 
 void ArchiveWriter::packEntry(const FileEntry& entry, std::vector<uint8_t>& out) {
     appendU32(out, static_cast<uint32_t>(entry.rel_path_utf8.size()));
@@ -139,27 +179,16 @@ bool ArchiveWriter::close() {
     const uint32_t table_offset = kTableOffsetBase + iv_len + kTableOffsetTail;
     const uint32_t data_offset = static_cast<uint32_t>(table_offset + table.size());
 
-    uint16_t flags = options_.compress ? kFlagCompressed : static_cast<uint16_t>(0);
+    uint16_t flags = (options_.codec != Codec::None) ? kFlagCompressed : static_cast<uint16_t>(0);
     if (options_.encrypt) flags |= kFlagEncrypted;
-    const uint8_t compressor_id = options_.compress ? kCompressorDeflate : kCompressorNone;
+    const uint8_t compressor_id = codecId(options_.codec);
     const uint8_t cipher_id = options_.encrypt ? kCipherStream : kCipherNone;
 
-    // 3. 组装 body（Entry Table + Data Region）；加密时对整个 body 做流加密
-    std::vector<uint8_t> body = table;
-    for (const auto& data : datas_) {
-        body.insert(body.end(), data.begin(), data.end());
-    }
-
+    // 3. 口令校验值（不动 body，加密在落盘时按块流式做）
     std::array<uint8_t, 4> password_check{};
     if (options_.encrypt) {
         StreamCipher cipher(options_.password);
         cipher.set_iv(iv_);
-        std::vector<uint8_t> encrypted;
-        if (!cipher.encrypt(body, encrypted)) {
-            last_error_ = "档案加密失败";
-            return false;
-        }
-        body.swap(encrypted);
         password_check = cipher.password_check();
     }
 
@@ -184,7 +213,9 @@ bool ArchiveWriter::close() {
     for (uint8_t byte : password_check) header.push_back(byte);
     appendU32(header, crc32(table.data(), table.size()));  // table_crc（明文）
 
-    // 5. 落盘：header + body
+    // 5. 落盘：header + （Entry Table + Data Region，加密时逐块加密写出）
+    //    这里不再把整包 body 拼成一个缓冲区，避免对全量数据再做一次拷贝。
+
     std::ofstream out(path_, std::ios::binary | std::ios::trunc);
     if (!out) {
         last_error_ = "无法创建档案文件: " + pathToUtf8(path_);
@@ -192,9 +223,29 @@ bool ArchiveWriter::close() {
     }
     out.write(reinterpret_cast<const char*>(header.data()),
               static_cast<std::streamsize>(header.size()));
-    if (!body.empty()) {
-        out.write(reinterpret_cast<const char*>(body.data()),
-                  static_cast<std::streamsize>(body.size()));
+
+    if (options_.encrypt) {
+        StreamCipherStream stream(options_.password, iv_);
+        std::vector<uint8_t> chunk;
+        auto writeEncrypted = [&](const uint8_t* data, size_t size) {
+            if (size == 0) return;
+            stream.process(data, size, chunk);
+            out.write(reinterpret_cast<const char*>(chunk.data()),
+                      static_cast<std::streamsize>(chunk.size()));
+        };
+        writeEncrypted(table.data(), table.size());
+        for (const auto& data : datas_) writeEncrypted(data.data(), data.size());
+    } else {
+        if (!table.empty()) {
+            out.write(reinterpret_cast<const char*>(table.data()),
+                      static_cast<std::streamsize>(table.size()));
+        }
+        for (const auto& data : datas_) {
+            if (!data.empty()) {
+                out.write(reinterpret_cast<const char*>(data.data()),
+                          static_cast<std::streamsize>(data.size()));
+            }
+        }
     }
     out.flush();
     if (!out) {

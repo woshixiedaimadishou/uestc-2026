@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 集成测试：备份 → 列举核对 → 完整性校验 → 还原 → 目录树比对
-# 覆盖 4 组组合矩阵：无 / 压缩 / 加密 / 压缩+加密
+# 覆盖压缩方案矩阵：无 / DEFLATE / 仅 Huffman / 仅 LZ77，以及加密组合
 # 用法: bash tests/integration/backup_roundtrip.sh
 set -euo pipefail
 
@@ -80,6 +80,8 @@ run_case() {
 
 run_case plain "" ""
 run_case compressed "--compress" ""
+run_case huffman "--codec huffman" ""
+run_case lz77 "--codec lz77" ""
 run_case encrypted "--encrypt" "$PASSWORD"
 run_case encrypted_compressed "--compress --encrypt" "$PASSWORD"
 

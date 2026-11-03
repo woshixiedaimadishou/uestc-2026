@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "dataguard/archive_format.h"
+#include "dataguard/compressor.h"
 #include "dataguard/file_entry.h"
 
 namespace dataguard {
@@ -31,7 +32,8 @@ public:
     bool verify(std::vector<std::string>* bad_files = nullptr);
 
     const std::vector<FileEntry>& entries() const { return entries_; }
-    bool compressed() const { return compressed_; }
+    bool compressed() const { return codec_ != Codec::None; }
+    Codec codec() const { return codec_; }
     bool encrypted() const { return encrypted_; }
     const std::string& last_error() const { return last_error_; }
 
@@ -42,7 +44,7 @@ private:
     std::vector<uint8_t> file_data_;
     std::vector<FileEntry> entries_;
     size_t data_offset_ = 0;
-    bool compressed_ = false;
+    Codec codec_ = Codec::None;
     bool encrypted_ = false;
     std::string last_error_;
 };

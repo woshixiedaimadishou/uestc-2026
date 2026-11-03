@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -62,5 +63,21 @@ private:
     std::string password_;
     mutable std::vector<uint8_t> iv_;
 };
+
+// 流式加解密：构造时完成 KSA，之后可分多块连续处理，
+// 密钥流位置在块之间保持（用于大档案边读边写，避免整包拷贝）。
+class StreamCipherStream {
+public:
+    StreamCipherStream(const std::string& password, const std::vector<uint8_t>& iv);
+
+    // 处理一块数据，结果追加/覆盖写入 out（out 会被 resize 为 size）
+    void process(const uint8_t* data, size_t size, std::vector<uint8_t>& out);
+
+private:
+    uint8_t s_[256] = {};
+    int i_ = 0;
+    int j_ = 0;
+};
+
 
 }  // namespace dataguard
