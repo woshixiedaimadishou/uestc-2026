@@ -10,3 +10,5 @@ dataguard_tasks.json
 dataguard_tasks_test.json
 .vscode/
 dataguard_settings.json
+release/
+dist/DataGuard_old_*/

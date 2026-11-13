@@ -20,7 +20,7 @@
 namespace {
 
 constexpr const char* kProductName = "DataGuard";
-constexpr const char* kVersion = "0.6.0";
+constexpr const char* kVersion = "1.0.0";
 
 std::string wideToUtf8(const std::wstring& w) {
     if (w.empty()) return std::string();
